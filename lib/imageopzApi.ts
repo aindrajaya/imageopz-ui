@@ -66,17 +66,12 @@ function getApiBaseUrl() {
   const isDev = Boolean(import.meta.env.DEV);
   // Use direct property access so Vite can statically replace it at build time.
   const base = import.meta.env.VITE_IMAGEOPZ_API_BASE_URL as unknown as string | undefined;
-  // In dev, prefer same-origin + Vite proxy to avoid CORS/OPTIONS preflights.
   if (isDev) {
     const g = globalThis as any;
     if (!g.__imageopzApiBaseLogged) {
       g.__imageopzApiBaseLogged = true;
-      console.log(
-        "[imageopz] API BASE: (dev proxy mode, same-origin). Backend target:",
-        typeof base === "string" ? base : String(base)
-      );
+      console.log("[imageopz] API BASE:", typeof base === "string" ? base : String(base));
     }
-    return "";
   }
   if (typeof base === "string" && base.trim().length > 0) {
     return base.replace(/\/+$/, "");

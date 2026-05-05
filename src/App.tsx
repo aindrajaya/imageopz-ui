@@ -208,9 +208,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [quota, setQuota] = useState<number>(3);
   const [isPro, setIsPro] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [showPaymentConfirm, setShowPaymentConfirm] = useState(false);
   const [checkoutEmail, setCheckoutEmail] = useState("");
+  const [isCreatingCheckout, setIsCreatingCheckout] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
   const [restoreEmail, setRestoreEmail] = useState("");
   const [progress, setProgress] = useState(0);
@@ -226,6 +228,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       setQuota(parseInt(saved, 10));
     }
     setIsPro(localStorage.getItem("imageopz_is_pro") === "true");
+    const savedEmail = localStorage.getItem("imageopz_email");
+    if (savedEmail) setAccountEmail(savedEmail);
 
     const existingSessionId = localStorage.getItem("imageopz_session_id");
     if (existingSessionId) {
@@ -367,7 +371,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         if (allFinished) {
           stopPolling();
           setProgress(100);
-          if (!isPro) setQuota(q => q - files.length);
+          setQuota(q => Math.max(0, q - files.length));
           setAppState("result");
           if (statuses.some(s => s.status === "done")) fireConfetti();
         }
@@ -474,14 +478,30 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           <div className="flex flex-wrap sm:flex-nowrap items-center gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
-              {isPro ? "Pro" : `${quota} ${t.optimizationsLeft}`}
+              {isPro ? `${quota} ${t.optimizationsLeft}` : `${quota} ${t.optimizationsLeft}`}
             </span>
-            <button 
-              className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
-              onClick={() => setShowPaywall(true)}
-            >
-              {t.upgradeToPro}
-            </button>
+            {isPro ? (
+              <div className="flex items-center gap-2">
+                <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 max-w-[220px] truncate">
+                  {(accountEmail || (lang === "en" ? "Pro user" : "Pengguna Pro"))} • {quota}
+                </div>
+                {quota <= 0 && (
+                  <button
+                    className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                    onClick={() => setShowPaywall(true)}
+                  >
+                    {lang === "en" ? "Add credits" : "Tambah kredit"}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <button 
+                className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                onClick={() => setShowPaywall(true)}
+              >
+                {t.upgradeToPro}
+              </button>
+            )}
             <div className="flex gap-2">
               <button 
                 onClick={() => navigate('/')} 
@@ -894,10 +914,20 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               placeholder={t.emailPlaceholder}
               value={checkoutEmail}
               onChange={(e) => setCheckoutEmail(e.target.value)}
+              disabled={isCreatingCheckout}
             />
           </div>
+          {isCreatingCheckout && (
+            <div className="text-sm text-muted-foreground">
+              {lang === "en" ? "Creating checkout, please wait..." : "Membuat checkout, mohon tunggu..."}
+            </div>
+          )}
           <div className="flex justify-end gap-3 pt-4">
-            <Button variant="outline" onClick={() => setShowPaymentConfirm(false)}>
+            <Button
+              variant="outline"
+              disabled={isCreatingCheckout}
+              onClick={() => setShowPaymentConfirm(false)}
+            >
               {t.cancel}
             </Button>
             <Button onClick={() => {
@@ -909,10 +939,13 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
               (async () => {
                 try {
+                  setIsCreatingCheckout(true);
                   const checkout = await createLemonSqueezyCheckout({
                     email,
                     sessionId,
                   });
+                  localStorage.setItem("imageopz_email", email);
+                  setAccountEmail(email);
                   if (checkout.session_id) {
                     localStorage.setItem("imageopz_session_id", checkout.session_id);
                     setSessionId(checkout.session_id);
@@ -921,6 +954,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   setShowPaywall(false);
                   window.location.href = checkout.checkout_url;
                 } catch (err) {
+                  setIsCreatingCheckout(false);
                   if (err instanceof ImageOpzApiError) {
                     toast.error(lang === "en" ? "Checkout failed" : "Checkout gagal", {
                       description: err.payload?.message || err.message,
@@ -930,8 +964,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   }
                 }
               })();
-            }}>
-              {t.confirm}
+            }}
+            disabled={isCreatingCheckout}
+            >
+              {isCreatingCheckout ? (lang === "en" ? "Redirecting..." : "Mengalihkan...") : t.confirm}
             </Button>
           </div>
         </DialogContent>
@@ -975,6 +1011,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     localStorage.setItem("imageopz_session_id", restored.session_id);
                     setSessionId(restored.session_id);
                     setIsPro(true);
+                    localStorage.setItem("imageopz_email", email);
+                    setAccountEmail(email);
                     setShowRestore(false);
                     setShowPaywall(false);
                     toast.success(lang === "en" ? "Pro restored" : "Pro dipulihkan");
@@ -1028,6 +1066,30 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           <MessageSquare className="w-6 h-6" />
         </button>
       </div>
+
+      {/* Global checkout redirect loading overlay */}
+      {isCreatingCheckout && (
+        <div className="fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-card shadow-xl p-6 text-center space-y-4">
+            <div className="relative w-16 h-16 mx-auto">
+              <div className="absolute inset-0 rounded-full border-4 border-muted" />
+              <motion.div
+                className="absolute inset-0 rounded-full border-4 border-foreground border-t-transparent"
+                animate={{ rotate: 360 }}
+                transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+              />
+            </div>
+            <div className="space-y-1">
+              <p className="font-semibold">
+                {lang === "en" ? "Redirecting to LemonSqueezy…" : "Mengalihkan ke LemonSqueezy…"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {lang === "en" ? "Please wait a moment." : "Mohon tunggu sebentar."}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
