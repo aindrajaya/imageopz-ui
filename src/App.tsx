@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -18,6 +18,12 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import confetti from "canvas-confetti";
 import { BrowserRouter, Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
+import {
+  optimizeImages,
+  getJobStatus,
+  ImageOpzApiError,
+  type JobStatusResponse,
+} from "@/lib/imageopzApi";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -198,12 +204,15 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
   const [quota, setQuota] = useState<number>(3);
+  const [isPro, setIsPro] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [showPaymentConfirm, setShowPaymentConfirm] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [queuePos, setQueuePos] = useState(0);
-  const [emailForQueue, setEmailForQueue] = useState("");
+  const [jobOrder, setJobOrder] = useState<string[]>([]);
+  const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const [showFeedback, setShowFeedback] = useState(false);
+  const pollTimerRef = useRef<number | null>(null);
 
   // Load quota on mount
   useEffect(() => {
@@ -211,6 +220,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     if (saved !== null) {
       setQuota(parseInt(saved, 10));
     }
+    setIsPro(localStorage.getItem("imageopz_is_pro") === "true");
+    const token = localStorage.getItem("imageopz_auth_token");
+    if (token) setAuthToken(token);
   }, []);
 
   // Save quota on change
@@ -218,12 +230,17 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     localStorage.setItem("imageopz_quota", quota.toString());
   }, [quota]);
 
+  useEffect(() => {
+    localStorage.setItem("imageopz_is_pro", isPro ? "true" : "false");
+  }, [isPro]);
+
   const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
     if (fileRejections.length > 0) {
       const rejection = fileRejections[0];
       if (rejection.errors[0]?.code === "file-too-large") {
+        const maxMb = isPro ? 50 : 10;
         toast.error(lang === "en" ? "File is too large" : "Ukuran file terlalu besar", { 
-          description: lang === "en" ? "Maximum file size is 10MB." : "Maksimal ukuran file adalah 10MB."
+          description: lang === "en" ? `Maximum file size is ${maxMb}MB.` : `Maksimal ukuran file adalah ${maxMb}MB.`
         });
       } else if (rejection.errors[0]?.code === "file-invalid-type") {
         toast.error(lang === "en" ? "Invalid file type" : "Tipe file tidak valid", { 
@@ -251,9 +268,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     const isFree = quota <= 3;
     const maxAllowed = isFree ? Math.min(3, quota) : Math.min(30, quota);
 
+    const maxBytes = isPro ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
     let validFiles = acceptedFiles.filter(f => {
       const isValidType = ["image/jpeg", "image/png", "image/webp"].includes(f.type);
-      const isValidSize = f.size <= 10 * 1024 * 1024;
+      const isValidSize = f.size <= maxBytes;
       return isValidType && isValidSize;
     });
 
@@ -276,38 +294,84 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     const urls = validFiles.map(f => URL.createObjectURL(f));
     setPreviewUrls(urls);
     setAppState("preview");
-  }, [quota, lang]);
+  }, [quota, lang, isPro]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { "image/jpeg": [], "image/png": [], "image/webp": [] } as any,
-    maxSize: 10 * 1024 * 1024,
-    maxFiles: quota <= 3 ? Math.min(3, quota) : Math.min(30, quota),
+    maxSize: (isPro ? 50 : 10) * 1024 * 1024,
+    maxFiles: isPro ? Math.min(30, Math.max(0, quota)) : Math.min(3, Math.max(0, quota)),
     multiple: true
   } as any);
 
-  const startProcessing = () => {
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, [stopPolling]);
+
+  const startProcessing = async () => {
     setAppState("processing");
     setProgress(0);
-    setQueuePos(Math.floor(Math.random() * 10) + 1); // Simulate queue 1-10
+    stopPolling();
+    setJobOrder([]);
+    setJobStatuses({});
 
-    let currentProgress = 0;
-    const interval = setInterval(() => {
-      currentProgress += Math.random() * 15;
-      if (currentProgress > 90) currentProgress = 90; // Hold at 90 until 'done'
-      setProgress(currentProgress);
-    }, 500);
+    try {
+      const queued = await optimizeImages({ images: files, authToken });
+      const order = queued.results.map(r => r.job_id);
+      setJobOrder(order);
 
-    // Simulate backend processing time (3-5s)
-    setTimeout(() => {
-      clearInterval(interval);
-      setProgress(100);
-      setTimeout(() => {
-        setQuota(q => q - files.length);
-        setAppState("result");
-        fireConfetti();
-      }, 500);
-    }, 4000);
+      const loadOnce = async () => {
+        const statuses = await Promise.all(order.map(id => getJobStatus(id)));
+        setJobStatuses(prev => {
+          const next = { ...prev };
+          for (const s of statuses) next[s.job_id] = s;
+          return next;
+        });
+
+        const progressValues = statuses.map(s => {
+          if (typeof s.progress === "number") return Math.max(0, Math.min(100, s.progress));
+          if (s.status === "done" || s.status === "failed") return 100;
+          if (s.status === "processing") return 50;
+          return 5;
+        });
+        const avg =
+          progressValues.length === 0
+            ? 0
+            : progressValues.reduce((a, b) => a + b, 0) / progressValues.length;
+        setProgress(avg);
+
+        const allFinished = statuses.every(s => s.status === "done" || s.status === "failed");
+        if (allFinished) {
+          stopPolling();
+          setProgress(100);
+          setQuota(q => q - files.length);
+          setAppState("result");
+          if (statuses.some(s => s.status === "done")) fireConfetti();
+        }
+      };
+
+      await loadOnce();
+      pollTimerRef.current = window.setInterval(loadOnce, 3000);
+    } catch (err) {
+      stopPolling();
+      setAppState("preview");
+      if (err instanceof ImageOpzApiError) {
+        toast.error(lang === "en" ? "Request failed" : "Permintaan gagal", {
+          description: err.payload?.message || err.message,
+        });
+      } else {
+        toast.error(lang === "en" ? "Request failed" : "Permintaan gagal");
+      }
+    }
   };
 
   const fireConfetti = () => {
@@ -320,18 +384,33 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   };
 
   const handleReset = () => {
+    stopPolling();
     setAppState("idle");
     setFiles([]);
     previewUrls.forEach(url => URL.revokeObjectURL(url));
     setPreviewUrls([]);
     setProgress(0);
+    setJobOrder([]);
+    setJobStatuses({});
   };
 
   const originalSize = files.reduce((acc, f) => acc + f.size, 0);
-  const newSize = originalSize * 0.15; // Simulate 85% drop
-  const savingsPct = 85;
+  const aggregated = useMemo(() => {
+    const statuses = jobOrder.map(id => jobStatuses[id]).filter(Boolean);
+    const totalOriginal = statuses.reduce((acc, s) => acc + (s?.original_size ?? 0), 0);
+    const totalOptimized = statuses.reduce((acc, s) => acc + (s?.optimized_size ?? 0), 0);
+    const anyOptimized = statuses.some(s => typeof s?.optimized_size === "number");
+    const savingsPct =
+      anyOptimized && totalOriginal > 0
+        ? Math.max(0, Math.min(100, Math.round((1 - totalOptimized / totalOriginal) * 100)))
+        : 0;
+    return { statuses, totalOriginal, totalOptimized, anyOptimized, savingsPct };
+  }, [jobOrder, jobStatuses]);
 
   const getProgressStage = () => {
+    const statuses = jobOrder.map(id => jobStatuses[id]).filter(Boolean);
+    const latest = statuses.find(s => s?.progress_status)?.progress_status;
+    if (latest) return latest;
     if (progress < 20) return t.progressStages[0];
     if (progress < 40) return t.progressStages[1];
     if (progress < 60) return t.progressStages[2];
@@ -355,6 +434,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       toast.success(t.copied);
     }
   };
+
+  const handleDownloadUrl = useCallback((url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-foreground selection:text-background">
@@ -545,34 +628,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     </motion.p>
                   </AnimatePresence>
                 </div>
-
-                {queuePos > 5 && progress < 80 && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-muted/50 rounded-2xl p-6 text-left border border-border mt-8"
-                  >
-                    <div className="flex gap-3 mb-4">
-                      <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                      <div>
-                        <h4 className="font-semibold text-sm">{t.highTraffic} ({t.queuePos}: {queuePos})</h4>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {t.waitOrLeaveEmail}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Input 
-                        type="email" 
-                        placeholder={t.emailPlaceholder}
-                        value={emailForQueue}
-                        onChange={(e) => setEmailForQueue(e.target.value)}
-                        className="bg-background"
-                      />
-                      <Button onClick={() => toast.success(t.emailSaved)}>{t.notifyMe}</Button>
-                    </div>
-                  </motion.div>
-                )}
               </motion.div>
             )}
 
@@ -598,7 +653,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   <Card className="bg-card border-border shadow-sm rounded-3xl">
                     <CardContent className="p-6 text-center space-y-1">
                       <p className="text-xs uppercase tracking-widest text-muted-foreground font-bold">{t.originalSize}</p>
-                      <p className="text-2xl font-serif font-medium">{formatBytes(originalSize)}</p>
+                      <p className="text-2xl font-serif font-medium">{formatBytes(aggregated.anyOptimized ? aggregated.totalOriginal : originalSize)}</p>
                     </CardContent>
                   </Card>
                   <Card className="bg-primary text-primary-foreground border-primary relative overflow-hidden group shadow-sm rounded-3xl">
@@ -606,9 +661,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     <CardContent className="p-6 text-center space-y-1 relative z-10">
                       <p className="text-xs uppercase tracking-widest text-primary-foreground/70 font-bold">{t.newSize}</p>
                       <p className="text-4xl font-serif font-bold tracking-tight text-white/90">
-                        {formatBytes(newSize)}
+                        {formatBytes(aggregated.anyOptimized ? aggregated.totalOptimized : 0)}
                       </p>
-                      <p className="text-xs text-primary-foreground/50 mt-1 italic">↓ {savingsPct}% {t.reduction}</p>
+                      <p className="text-xs text-primary-foreground/50 mt-1 italic">↓ {aggregated.savingsPct}% {t.reduction}</p>
                     </CardContent>
                   </Card>
                   <Card className="bg-card border-border shadow-sm rounded-3xl">
@@ -621,9 +676,33 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center pt-8 border-t border-border">
-                  <button className="rounded-full w-full sm:w-auto px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2">
-                    <Download className="w-4 h-4" /> {t.downloadImage}
-                  </button>
+                  {aggregated.statuses.filter(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0).length <= 1 ? (
+                    <button
+                      onClick={() => {
+                        const url =
+                          aggregated.statuses.find(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)?.r2_url ?? null;
+                        if (url) handleDownloadUrl(url);
+                      }}
+                      disabled={!aggregated.statuses.some(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)}
+                      className="rounded-full w-full sm:w-auto px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Download className="w-4 h-4" /> {t.downloadImage}
+                    </button>
+                  ) : (
+                    <div className="w-full sm:w-auto flex flex-col gap-2">
+                      {aggregated.statuses
+                        .filter(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)
+                        .map(s => (
+                          <button
+                            key={s.job_id}
+                            onClick={() => handleDownloadUrl(s.r2_url as string)}
+                            className="rounded-full w-full px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2"
+                          >
+                            <Download className="w-4 h-4" /> {t.downloadImage} ({s.original_filename})
+                          </button>
+                        ))}
+                    </div>
+                  )}
                   <button onClick={handleShare} className="rounded-full w-full sm:w-auto px-8 py-3 bg-secondary text-secondary-foreground font-bold hover:bg-secondary/80 transition-colors flex items-center justify-center gap-2">
                     <Share2 className="w-4 h-4" /> {t.shareResult}
                   </button>
@@ -636,7 +715,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 </div>
 
                 <div className="bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 p-4 rounded-xl text-center text-sm font-medium max-w-lg mx-auto">
-                  {t.privacyWarning}
+                  {(() => {
+                    const expiry = aggregated.statuses
+                      .map(s => s.expiry_date)
+                      .filter(Boolean)
+                      .sort()[0];
+                    if (!expiry) return t.privacyWarning;
+                    const d = new Date(expiry);
+                    const formatted = isNaN(d.getTime()) ? expiry : d.toLocaleString();
+                    return lang === "en"
+                      ? `Privacy: files expire at ${formatted}.`
+                      : `Privasi: file kedaluwarsa pada ${formatted}.`;
+                  })()}
                 </div>
               </motion.div>
             )}
@@ -778,6 +868,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             </Button>
             <Button onClick={() => {
               setQuota(100);
+              setIsPro(true);
               setShowPaymentConfirm(false);
               setShowPaywall(false);
               toast.success(t.paymentSuccess);
