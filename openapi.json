@@ -198,66 +198,6 @@
         }
       }
     },
-    "/api/v1/session/restore": {
-      "post": {
-        "tags": [
-          "optimization"
-        ],
-        "summary": "Restore Pro Session",
-        "description": "Relink a (possibly new) browser session_id to an existing Pro purchase.\n\nThis is a best-effort restore flow intended for:\n- user cleared storage / changed browser\n- user changed networks (ip_hash differs)",
-        "operationId": "restore_pro_session_api_v1_session_restore_post",
-        "parameters": [
-          {
-            "name": "X-Session-Id",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Session-Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionRestoreRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionRestoreResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/status/{job_id}": {
       "get": {
         "tags": [
@@ -325,6 +265,138 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session/restore": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Restore Pro Session",
+        "description": "Restore/Relink a browser `session_id` to an existing Pro entitlement.\n\n- UI calls this when user clicks \"Restore Pro\" and provides the purchase email.\n- Backend finds an active Pro UsersQuota for that email and binds it to the current `session_id`.",
+        "operationId": "restore_pro_session_api_v1_session_restore_post",
+        "parameters": [
+          {
+            "name": "X-Session-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRestoreResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session/me": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Get Session Me",
+        "description": "Return the server-side session state needed by the frontend UI.\n\nThis is the authoritative source for:\n- whether the current session is Pro (active)\n- free-tier credits used/remaining",
+        "operationId": "get_session_me_api_v1_session_me_get",
+        "parameters": [
+          {
+            "name": "X-Session-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionMeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session/logout": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "Logout Session",
+        "description": "Clear the session cookie and rotate to a new session id.\nUseful when the frontend wants a reliable \"reset session\" action.",
+        "operationId": "logout_session_api_v1_session_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionLogoutResponse"
+                }
               }
             }
           }
@@ -777,6 +849,125 @@
         ],
         "title": "OptimizationResultResponse",
         "description": "Result of a single image optimization"
+      },
+      "SessionLogoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether logout succeeded",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "New session id after rotation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionLogoutResponse"
+      },
+      "SessionMeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "description": "Whether lookup succeeded",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Current session id (cookie/header)"
+          },
+          "ip_hash": {
+            "type": "string",
+            "title": "Ip Hash",
+            "description": "Server-side IP hash for this request"
+          },
+          "is_pro": {
+            "type": "boolean",
+            "title": "Is Pro",
+            "description": "Whether this session currently has active Pro"
+          },
+          "pro_expiry_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pro Expiry Date",
+            "description": "Pro expiry date (if pro)"
+          },
+          "pro_verified": {
+            "type": "boolean",
+            "title": "Pro Verified",
+            "description": "Whether Pro is verified/linked for this session"
+          },
+          "pro_source": {
+            "type": "string",
+            "title": "Pro Source",
+            "description": "How Pro was linked: webhook|restore|checkout|unknown|none"
+          },
+          "needs_restore": {
+            "type": "boolean",
+            "title": "Needs Restore",
+            "description": "UI hint: Pro detected but not verified for this session"
+          },
+          "credits_used": {
+            "type": "integer",
+            "title": "Credits Used",
+            "description": "Credits used for free tier tracking"
+          },
+          "free_tier_max_credits": {
+            "type": "integer",
+            "title": "Free Tier Max Credits",
+            "description": "Configured free tier credit limit"
+          },
+          "credits_remaining": {
+            "type": "integer",
+            "title": "Credits Remaining",
+            "description": "Remaining free credits (0 if exhausted; -1 if pro)"
+          },
+          "pro_tier_max_credits": {
+            "type": "integer",
+            "title": "Pro Tier Max Credits",
+            "description": "Configured pro tier credit limit"
+          },
+          "pro_credits_used": {
+            "type": "integer",
+            "title": "Pro Credits Used",
+            "description": "Credits used in pro tier window"
+          },
+          "pro_credits_remaining": {
+            "type": "integer",
+            "title": "Pro Credits Remaining",
+            "description": "Remaining pro credits (0 if exhausted; -1 if not pro)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "ip_hash",
+          "is_pro",
+          "pro_verified",
+          "pro_source",
+          "needs_restore",
+          "credits_used",
+          "free_tier_max_credits",
+          "credits_remaining",
+          "pro_tier_max_credits",
+          "pro_credits_used",
+          "pro_credits_remaining"
+        ],
+        "title": "SessionMeResponse"
       },
       "SessionRestoreRequest": {
         "properties": {

@@ -62,6 +62,23 @@ export interface SessionRestoreResponse {
   pro_expiry_date: string;
 }
 
+export interface SessionMeResponse {
+  success?: boolean;
+  session_id: string;
+  ip_hash: string;
+  is_pro: boolean;
+  pro_expiry_date?: string | null;
+  pro_verified: boolean;
+  pro_source: string; // webhook|restore|checkout|unknown|none
+  needs_restore: boolean;
+  credits_used: number;
+  free_tier_max_credits: number;
+  credits_remaining: number; // 0 exhausted; -1 if pro
+  pro_tier_max_credits: number;
+  pro_credits_used: number;
+  pro_credits_remaining: number; // 0 exhausted; -1 if not pro
+}
+
 function getApiBaseUrl() {
   const isDev = Boolean(import.meta.env.DEV);
   // Use direct property access so Vite can statically replace it at build time.
@@ -232,4 +249,50 @@ export async function restoreProSession(params: {
   }
 
   return await readJson<SessionRestoreResponse>(response);
+}
+
+export async function getSessionMe(params?: { sessionId?: string | null }): Promise<SessionMeResponse> {
+  const apiBaseUrl = getApiBaseUrl();
+  const response = await fetch(`${apiBaseUrl}/api/v1/session/me`, {
+    method: "GET",
+    headers: {
+      ...(params?.sessionId ? { "X-Session-Id": params.sessionId } : {}),
+    },
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const payload = await tryReadError(response);
+    throw new ImageOpzApiError(
+      payload?.message || `Session me request failed (${response.status})`,
+      response.status,
+      payload
+    );
+  }
+
+  return await readJson<SessionMeResponse>(response);
+}
+
+export interface SessionLogoutResponse {
+  success?: boolean;
+  session_id: string;
+}
+
+export async function logoutSession(): Promise<SessionLogoutResponse> {
+  const apiBaseUrl = getApiBaseUrl();
+  const response = await fetch(`${apiBaseUrl}/api/v1/session/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    const payload = await tryReadError(response);
+    throw new ImageOpzApiError(
+      payload?.message || `Logout request failed (${response.status})`,
+      response.status,
+      payload
+    );
+  }
+
+  return await readJson<SessionLogoutResponse>(response);
 }

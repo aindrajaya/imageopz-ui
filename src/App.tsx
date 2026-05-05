@@ -23,6 +23,8 @@ import {
   getJobStatus,
   createLemonSqueezyCheckout,
   restoreProSession,
+  getSessionMe,
+  logoutSession,
   ImageOpzApiError,
   type JobStatusResponse,
 } from "@/lib/imageopzApi";
@@ -207,12 +209,16 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [files, setFiles] = useState<File[]>([]);
   const [quota, setQuota] = useState<number>(3);
   const [isPro, setIsPro] = useState(false);
+  const [needsRestore, setNeedsRestore] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
+  const [forceRestore, setForceRestore] = useState(false);
+  const [hideRestoreCta, setHideRestoreCta] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
   const [showPaymentConfirm, setShowPaymentConfirm] = useState(false);
   const [checkoutEmail, setCheckoutEmail] = useState("");
   const [isCreatingCheckout, setIsCreatingCheckout] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
   const [restoreEmail, setRestoreEmail] = useState("");
   const [progress, setProgress] = useState(0);
@@ -227,9 +233,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     if (saved !== null) {
       setQuota(parseInt(saved, 10));
     }
-    setIsPro(localStorage.getItem("imageopz_is_pro") === "true");
     const savedEmail = localStorage.getItem("imageopz_email");
     if (savedEmail) setAccountEmail(savedEmail);
+    setForceRestore(localStorage.getItem("imageopz_force_restore") === "true");
+    setHideRestoreCta(localStorage.getItem("imageopz_hide_restore_cta") === "true");
 
     const existingSessionId = localStorage.getItem("imageopz_session_id");
     if (existingSessionId) {
@@ -241,14 +248,35 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     }
   }, []);
 
+  // Sync session state from backend (authoritative for pro + remaining credits)
+  useEffect(() => {
+    (async () => {
+      try {
+        const me = await getSessionMe({ sessionId });
+        if (me.session_id) {
+          localStorage.setItem("imageopz_session_id", me.session_id);
+          setSessionId(me.session_id);
+        }
+        const requiresRestore =
+          Boolean(me.is_pro) &&
+          (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+        const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
+        setIsPro(proActive);
+        setNeedsRestore(requiresRestore);
+        const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
+        setQuota(Math.max(0, remaining));
+      } catch {
+        // Best effort: keep local state if backend unavailable.
+      }
+    })();
+  }, [sessionId, forceRestore]);
+
   // Save quota on change
   useEffect(() => {
     localStorage.setItem("imageopz_quota", quota.toString());
   }, [quota]);
 
-  useEffect(() => {
-    localStorage.setItem("imageopz_is_pro", isPro ? "true" : "false");
-  }, [isPro]);
+  // `isPro` is derived from backend `/api/v1/session/me`; don't persist as a local source of truth.
 
   const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
     if (fileRejections.length > 0) {
@@ -371,7 +399,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         if (allFinished) {
           stopPolling();
           setProgress(100);
-          setQuota(q => Math.max(0, q - files.length));
+          // Refresh credits/quota from backend (authoritative for both free & pro)
+          try {
+            const me = await getSessionMe({ sessionId });
+            const requiresRestore =
+              Boolean(me.is_pro) &&
+              (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+            const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
+            setIsPro(proActive);
+            setNeedsRestore(requiresRestore);
+            const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
+            setQuota(Math.max(0, remaining));
+          } catch {}
           setAppState("result");
           if (statuses.some(s => s.status === "done")) fireConfetti();
         }
@@ -462,6 +501,34 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
 
+  const handleLogout = useCallback(() => {
+    // Best-effort "logout": clear local identity markers, clear session cookie, and rotate session id.
+    (async () => {
+      try {
+        setIsLoggingOut(true);
+        const out = await logoutSession();
+        localStorage.setItem("imageopz_session_id", out.session_id);
+        setSessionId(out.session_id);
+      } catch (err) {
+        toast.error("Logout failed");
+        setIsLoggingOut(false);
+        return;
+      }
+
+      localStorage.removeItem("imageopz_email");
+      localStorage.setItem("imageopz_force_restore", "true");
+      localStorage.setItem("imageopz_hide_restore_cta", "true");
+      setAccountEmail(null);
+      setIsPro(false);
+      setNeedsRestore(false);
+      setForceRestore(true);
+      setHideRestoreCta(true);
+      setQuota(3);
+      toast.success("Logged out");
+      setIsLoggingOut(false);
+    })();
+  }, []);
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-foreground selection:text-background">
       <Toaster position="top-center" />
@@ -483,23 +550,26 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             {isPro ? (
               <div className="flex items-center gap-2">
                 <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 max-w-[220px] truncate">
-                  {(accountEmail || (lang === "en" ? "Pro user" : "Pengguna Pro"))} • {quota}
+                  {accountEmail ? `Pro (${accountEmail})` : "Pro"}
                 </div>
-                {quota <= 0 && (
-                  <button
-                    className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
-                    onClick={() => setShowPaywall(true)}
-                  >
-                    {lang === "en" ? "Add credits" : "Tambah kredit"}
-                  </button>
-                )}
+                <button
+                  className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={handleLogout}
+                  disabled={isLoggingOut}
+                  type="button"
+                >
+                  {isLoggingOut ? "Logging out..." : "Logout"}
+                </button>
               </div>
             ) : (
               <button 
                 className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
-                onClick={() => setShowPaywall(true)}
+                onClick={() => {
+                  if (!hideRestoreCta && needsRestore) setShowRestore(true);
+                  else setShowPaywall(true);
+                }}
               >
-                {t.upgradeToPro}
+                {hideRestoreCta ? "Upgrade to Pro" : needsRestore ? "Restore Pro" : "Upgrade to Pro"}
               </button>
             )}
             <div className="flex gap-2">
@@ -938,18 +1008,31 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               }
 
               (async () => {
-                try {
-                  setIsCreatingCheckout(true);
-                  const checkout = await createLemonSqueezyCheckout({
-                    email,
-                    sessionId,
-                  });
+                  try {
+                    setIsCreatingCheckout(true);
+                    const checkout = await createLemonSqueezyCheckout({
+                      email,
+                      sessionId,
+                    });
                   localStorage.setItem("imageopz_email", email);
                   setAccountEmail(email);
                   if (checkout.session_id) {
                     localStorage.setItem("imageopz_session_id", checkout.session_id);
                     setSessionId(checkout.session_id);
                   }
+                  // Sync backend session state before redirect (cookie/session may be updated server-side)
+                  try {
+                    const me = await getSessionMe({ sessionId: checkout.session_id ?? sessionId });
+                    const requiresRestore =
+                      Boolean(me.is_pro) && (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+                    setIsPro(Boolean(me.is_pro && me.pro_verified && !requiresRestore));
+                    setNeedsRestore(requiresRestore);
+                    if (!me.is_pro) setQuota(Math.max(0, me.credits_remaining));
+                  } catch {}
+                  localStorage.removeItem("imageopz_force_restore");
+                  setForceRestore(false);
+                  localStorage.removeItem("imageopz_hide_restore_cta");
+                  setHideRestoreCta(false);
                   setShowPaymentConfirm(false);
                   setShowPaywall(false);
                   window.location.href = checkout.checkout_url;
@@ -1010,9 +1093,22 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     const restored = await restoreProSession({ email, sessionId });
                     localStorage.setItem("imageopz_session_id", restored.session_id);
                     setSessionId(restored.session_id);
-                    setIsPro(true);
+                    setNeedsRestore(false);
+                    localStorage.removeItem("imageopz_force_restore");
+                    setForceRestore(false);
+                    localStorage.removeItem("imageopz_hide_restore_cta");
+                    setHideRestoreCta(false);
                     localStorage.setItem("imageopz_email", email);
                     setAccountEmail(email);
+                    // Refresh authoritative session state
+                    try {
+                      const me = await getSessionMe({ sessionId: restored.session_id });
+                      const requiresRestore =
+                        Boolean(me.is_pro) && (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+                      setIsPro(Boolean(me.is_pro && me.pro_verified && !requiresRestore));
+                      setNeedsRestore(requiresRestore);
+                      if (!me.is_pro) setQuota(Math.max(0, me.credits_remaining));
+                    } catch {}
                     setShowRestore(false);
                     setShowPaywall(false);
                     toast.success(lang === "en" ? "Pro restored" : "Pro dipulihkan");
