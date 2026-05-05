@@ -34,8 +34,50 @@ export interface JobStatusResponse {
   expiry_date: string;
 }
 
+export interface LemonSqueezyCreateCheckoutRequest {
+  email: string;
+  session_id?: string | null;
+  store_id?: string | null;
+  variant_id?: string | null;
+  redirect_url?: string | null;
+  test_mode?: boolean | null;
+}
+
+export interface LemonSqueezyCreateCheckoutResponse {
+  success?: boolean;
+  checkout_id: string;
+  checkout_url: string;
+  ip_hash: string;
+  session_id?: string | null;
+  provider?: string;
+}
+
+export interface SessionRestoreRequest {
+  email: string;
+}
+
+export interface SessionRestoreResponse {
+  success?: boolean;
+  session_id: string;
+  pro_expiry_date: string;
+}
+
 function getApiBaseUrl() {
-  const base = (import.meta as any)?.env?.VITE_IMAGEOPZ_API_BASE_URL;
+  const isDev = Boolean(import.meta.env.DEV);
+  // Use direct property access so Vite can statically replace it at build time.
+  const base = import.meta.env.VITE_IMAGEOPZ_API_BASE_URL as unknown as string | undefined;
+  // In dev, prefer same-origin + Vite proxy to avoid CORS/OPTIONS preflights.
+  if (isDev) {
+    const g = globalThis as any;
+    if (!g.__imageopzApiBaseLogged) {
+      g.__imageopzApiBaseLogged = true;
+      console.log(
+        "[imageopz] API BASE: (dev proxy mode, same-origin). Backend target:",
+        typeof base === "string" ? base : String(base)
+      );
+    }
+    return "";
+  }
   if (typeof base === "string" && base.trim().length > 0) {
     return base.replace(/\/+$/, "");
   }
@@ -83,15 +125,22 @@ export class ImageOpzApiError extends Error {
 
 export async function optimizeImages(params: {
   images: File[];
-  authToken?: string | null;
+  sessionId?: string | null;
 }): Promise<BulkOptimizeResponse> {
   const apiBaseUrl = getApiBaseUrl();
+  if (import.meta.env.DEV && (!apiBaseUrl || apiBaseUrl.trim().length === 0)) {
+    console.warn("[imageopz] API base URL is empty; requests will go to same-origin.");
+  }
   const form = new FormData();
   for (const image of params.images) form.append("images", image);
-  if (params.authToken) form.append("auth_token", params.authToken);
+  if (params.sessionId) form.append("session_id_form", params.sessionId);
 
   const response = await fetch(`${apiBaseUrl}/api/v1/optimize`, {
     method: "POST",
+    headers: {
+      ...(params.sessionId ? { "X-Session-Id": params.sessionId } : {}),
+    },
+    credentials: "include",
     body: form,
   });
 
@@ -112,7 +161,7 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
   const apiBaseUrl = getApiBaseUrl();
   const response = await fetch(
     `${apiBaseUrl}/api/v1/status/${encodeURIComponent(jobId)}`,
-    { method: "GET" }
+    { method: "GET", credentials: "include" }
   );
 
   if (!response.ok) {
@@ -127,3 +176,65 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
   return await readJson<JobStatusResponse>(response);
 }
 
+export async function createLemonSqueezyCheckout(params: {
+  email: string;
+  sessionId?: string | null;
+}): Promise<LemonSqueezyCreateCheckoutResponse> {
+  const apiBaseUrl = getApiBaseUrl();
+  console.log("API BASE:", apiBaseUrl)
+  const body: LemonSqueezyCreateCheckoutRequest = {
+    email: params.email,
+    session_id: params.sessionId ?? null,
+  };
+
+  const response = await fetch(`${apiBaseUrl}/api/v1/checkout/lemonsqueezy`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(params.sessionId ? { "X-Session-Id": params.sessionId } : {}),
+    },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const payload = await tryReadError(response);
+    throw new ImageOpzApiError(
+      payload?.message || `Checkout request failed (${response.status})`,
+      response.status,
+      payload
+    );
+  }
+
+  // Spec: 201 w/ LemonSqueezyCreateCheckoutResponse
+  return await readJson<LemonSqueezyCreateCheckoutResponse>(response);
+}
+
+export async function restoreProSession(params: {
+  email: string;
+  sessionId?: string | null;
+}): Promise<SessionRestoreResponse> {
+  const apiBaseUrl = getApiBaseUrl();
+  const body: SessionRestoreRequest = { email: params.email };
+
+  const response = await fetch(`${apiBaseUrl}/api/v1/session/restore`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(params.sessionId ? { "X-Session-Id": params.sessionId } : {}),
+    },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const payload = await tryReadError(response);
+    throw new ImageOpzApiError(
+      payload?.message || `Restore request failed (${response.status})`,
+      response.status,
+      payload
+    );
+  }
+
+  return await readJson<SessionRestoreResponse>(response);
+}

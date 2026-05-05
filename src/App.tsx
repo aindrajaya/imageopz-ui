@@ -21,6 +21,8 @@ import { BrowserRouter, Routes, Route, useNavigate, useParams, useLocation } fro
 import {
   optimizeImages,
   getJobStatus,
+  createLemonSqueezyCheckout,
+  restoreProSession,
   ImageOpzApiError,
   type JobStatusResponse,
 } from "@/lib/imageopzApi";
@@ -205,9 +207,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [files, setFiles] = useState<File[]>([]);
   const [quota, setQuota] = useState<number>(3);
   const [isPro, setIsPro] = useState(false);
-  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [showPaymentConfirm, setShowPaymentConfirm] = useState(false);
+  const [checkoutEmail, setCheckoutEmail] = useState("");
+  const [showRestore, setShowRestore] = useState(false);
+  const [restoreEmail, setRestoreEmail] = useState("");
   const [progress, setProgress] = useState(0);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
@@ -221,8 +226,15 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       setQuota(parseInt(saved, 10));
     }
     setIsPro(localStorage.getItem("imageopz_is_pro") === "true");
-    const token = localStorage.getItem("imageopz_auth_token");
-    if (token) setAuthToken(token);
+
+    const existingSessionId = localStorage.getItem("imageopz_session_id");
+    if (existingSessionId) {
+      setSessionId(existingSessionId);
+    } else if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      const id = crypto.randomUUID();
+      localStorage.setItem("imageopz_session_id", id);
+      setSessionId(id);
+    }
   }, []);
 
   // Save quota on change
@@ -247,10 +259,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           description: lang === "en" ? "Only JPEG, PNG, and WEBP are supported." : "Hanya format JPEG, PNG, dan WEBP yang didukung."
         });
       } else if (rejection.errors[0]?.code === "too-many-files") {
-        const isFree = quota <= 3;
-        const maxAllowed = isFree ? Math.min(3, quota) : Math.min(30, quota);
+        const maxAllowed = isPro ? 30 : Math.min(3, quota);
         toast.error(lang === "en" ? `Max ${maxAllowed} files allowed` : `Maksimal ${maxAllowed} file`, {
-          description: lang === "en" ? (isFree ? "Free version accepts up to 3 files at a time." : `You can only process ${maxAllowed} files right now.`) : (isFree ? "Versi gratis menerima maksimal 3 file." : `Anda hanya dapat memproses ${maxAllowed} file saat ini.`)
+          description: lang === "en"
+            ? (isPro ? "Pro version accepts up to 30 files at a time." : "Free version accepts up to 3 files at a time.")
+            : (isPro ? "Versi Pro menerima maksimal 30 file." : "Versi gratis menerima maksimal 3 file.")
         });
       } else {
         toast.error(lang === "en" ? "Error uploading file" : "Gagal mengunggah file");
@@ -260,13 +273,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     if (acceptedFiles.length === 0) return;
 
-    if (quota <= 0) {
+    if (!isPro && quota <= 0) {
       setShowPaywall(true);
       return;
     }
 
-    const isFree = quota <= 3;
-    const maxAllowed = isFree ? Math.min(3, quota) : Math.min(30, quota);
+    const maxAllowed = isPro ? 30 : Math.min(3, quota);
 
     const maxBytes = isPro ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
     let validFiles = acceptedFiles.filter(f => {
@@ -283,7 +295,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     if (validFiles.length > maxAllowed) {
       toast.error(lang === "en" ? `Max ${maxAllowed} files allowed` : `Maksimal ${maxAllowed} file`, {
-        description: lang === "en" ? (isFree ? "Free version accepts up to 3 files at a time." : `You can only process ${maxAllowed} files right now.`) : (isFree ? "Versi gratis menerima maksimal 3 file." : `Anda hanya dapat memproses ${maxAllowed} file saat ini.`)
+        description: lang === "en"
+          ? (isPro ? "Pro version accepts up to 30 files at a time." : "Free version accepts up to 3 files at a time.")
+          : (isPro ? "Versi Pro menerima maksimal 30 file." : "Versi gratis menerima maksimal 3 file.")
       });
       validFiles = validFiles.slice(0, maxAllowed);
     }
@@ -300,7 +314,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     onDrop,
     accept: { "image/jpeg": [], "image/png": [], "image/webp": [] } as any,
     maxSize: (isPro ? 50 : 10) * 1024 * 1024,
-    maxFiles: isPro ? Math.min(30, Math.max(0, quota)) : Math.min(3, Math.max(0, quota)),
+    maxFiles: isPro ? 30 : Math.min(3, Math.max(0, quota)),
     multiple: true
   } as any);
 
@@ -325,7 +339,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setJobStatuses({});
 
     try {
-      const queued = await optimizeImages({ images: files, authToken });
+      const queued = await optimizeImages({ images: files, sessionId });
       const order = queued.results.map(r => r.job_id);
       setJobOrder(order);
 
@@ -353,7 +367,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         if (allFinished) {
           stopPolling();
           setProgress(100);
-          setQuota(q => q - files.length);
+          if (!isPro) setQuota(q => q - files.length);
           setAppState("result");
           if (statuses.some(s => s.status === "done")) fireConfetti();
         }
@@ -365,6 +379,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       stopPolling();
       setAppState("preview");
       if (err instanceof ImageOpzApiError) {
+        // If backend rate-limits/quota-limits, reflect that locally so UI blocks further requests.
+        if (!isPro && err.status === 429) {
+          setQuota(0);
+          setShowPaywall(true);
+        }
         toast.error(lang === "en" ? "Request failed" : "Permintaan gagal", {
           description: err.payload?.message || err.message,
         });
@@ -455,7 +474,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           <div className="flex flex-wrap sm:flex-nowrap items-center gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
-              {quota} {t.optimizationsLeft}
+              {isPro ? "Pro" : `${quota} ${t.optimizationsLeft}`}
             </span>
             <button 
               className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
@@ -844,6 +863,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 >
                   <CreditCard className="w-4 h-4 mr-2" /> {t.buyCredits}
                 </Button>
+                <button
+                  onClick={() => setShowRestore(true)}
+                  className="mt-3 w-full text-xs font-semibold text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
+                >
+                  {lang === "en" ? "Already purchased? Restore Pro" : "Sudah pernah beli? Pulihkan Pro"}
+                </button>
                 <p className="text-xs text-center text-muted-foreground mt-3 flex items-center justify-center gap-1">
                   Powered by LemonSqueezy <LockIcon className="w-3 h-3" />
                 </p>
@@ -862,18 +887,110 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               {t.confirmPaymentDesc}
             </DialogDescription>
           </DialogHeader>
+          <div className="space-y-2">
+            <Label>{lang === "en" ? "Email" : "Email"}</Label>
+            <Input
+              type="email"
+              placeholder={t.emailPlaceholder}
+              value={checkoutEmail}
+              onChange={(e) => setCheckoutEmail(e.target.value)}
+            />
+          </div>
           <div className="flex justify-end gap-3 pt-4">
             <Button variant="outline" onClick={() => setShowPaymentConfirm(false)}>
               {t.cancel}
             </Button>
             <Button onClick={() => {
-              setQuota(100);
-              setIsPro(true);
-              setShowPaymentConfirm(false);
-              setShowPaywall(false);
-              toast.success(t.paymentSuccess);
+              const email = checkoutEmail.trim();
+              if (!email || !email.includes("@")) {
+                toast.error(lang === "en" ? "Email required" : "Email wajib diisi");
+                return;
+              }
+
+              (async () => {
+                try {
+                  const checkout = await createLemonSqueezyCheckout({
+                    email,
+                    sessionId,
+                  });
+                  if (checkout.session_id) {
+                    localStorage.setItem("imageopz_session_id", checkout.session_id);
+                    setSessionId(checkout.session_id);
+                  }
+                  setShowPaymentConfirm(false);
+                  setShowPaywall(false);
+                  window.location.href = checkout.checkout_url;
+                } catch (err) {
+                  if (err instanceof ImageOpzApiError) {
+                    toast.error(lang === "en" ? "Checkout failed" : "Checkout gagal", {
+                      description: err.payload?.message || err.message,
+                    });
+                  } else {
+                    toast.error(lang === "en" ? "Checkout failed" : "Checkout gagal");
+                  }
+                }
+              })();
             }}>
               {t.confirm}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Restore Pro Modal */}
+      <Dialog open={showRestore} onOpenChange={setShowRestore}>
+        <DialogContent className="sm:max-w-md border-border bg-card shadow-xl rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-serif">{lang === "en" ? "Restore Pro" : "Pulihkan Pro"}</DialogTitle>
+            <DialogDescription>
+              {lang === "en"
+                ? "If you already purchased Pro, enter your purchase email to relink this browser session."
+                : "Jika Anda sudah pernah membeli Pro, masukkan email pembelian untuk menghubungkan ulang sesi browser ini."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>{lang === "en" ? "Email" : "Email"}</Label>
+            <Input
+              type="email"
+              placeholder={t.emailPlaceholder}
+              value={restoreEmail}
+              onChange={(e) => setRestoreEmail(e.target.value)}
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setShowRestore(false)}>
+              {t.cancel}
+            </Button>
+            <Button
+              onClick={() => {
+                const email = restoreEmail.trim();
+                if (!email || !email.includes("@")) {
+                  toast.error(lang === "en" ? "Email required" : "Email wajib diisi");
+                  return;
+                }
+
+                (async () => {
+                  try {
+                    const restored = await restoreProSession({ email, sessionId });
+                    localStorage.setItem("imageopz_session_id", restored.session_id);
+                    setSessionId(restored.session_id);
+                    setIsPro(true);
+                    setShowRestore(false);
+                    setShowPaywall(false);
+                    toast.success(lang === "en" ? "Pro restored" : "Pro dipulihkan");
+                  } catch (err) {
+                    if (err instanceof ImageOpzApiError) {
+                      toast.error(lang === "en" ? "Restore failed" : "Gagal memulihkan", {
+                        description: err.payload?.message || err.message,
+                      });
+                    } else {
+                      toast.error(lang === "en" ? "Restore failed" : "Gagal memulihkan");
+                    }
+                  }
+                })();
+              }}
+            >
+              {lang === "en" ? "Restore" : "Pulihkan"}
             </Button>
           </div>
         </DialogContent>
