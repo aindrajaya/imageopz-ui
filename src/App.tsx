@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "motion/react";
+import { Analytics } from "@vercel/analytics/react";
 import { 
   UploadCloud, 
   Zap, 
@@ -1610,6 +1611,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <GlobalRouter />
+      <Analytics />
     </BrowserRouter>
   );
 }
