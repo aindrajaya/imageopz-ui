@@ -1,6 +1,6 @@
 {
   "name": "ImageOpz",
-  "description": "",
+  "description": "ImageOpz is a modern image-optimization SaaS for web developers and creators: smart compression and conversion of JPEG/PNG/WEBP to WebP/AVIF with up to ~80% smaller files, blazing-fast performance for higher Lighthouse scores, and strict privacy (auto-delete after 7 days on Free, 40 days on Pro). Guest-first with no login (Free includes 3 credits). Pro is unlocked via LemonSqueezy and can be claimed for cross-device access using Supabase Magic Link (auth = Pro access gate).",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
