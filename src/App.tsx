@@ -18,12 +18,14 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import confetti from "canvas-confetti";
 import { BrowserRouter, Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
+import { useAuth } from "@/context/AuthContext";
+import { AuthCallback } from "@/components/auth/AuthCallback";
 import {
   optimizeImages,
   getJobStatus,
   createLemonSqueezyCheckout,
-  restoreProSession,
   getSessionMe,
+  reconcileSession,
   logoutSession,
   ImageOpzApiError,
   type JobStatusResponse,
@@ -203,6 +205,8 @@ const translations = {
 function AppContent({ lang }: { lang: "en" | "id" }) {
   const t = translations[lang];
   const navigate = useNavigate();
+  const { accessToken, email: authEmail, signInWithMagicLink, signOut, loadingAuth } = useAuth();
+  const MAGIC_LINK_COOLDOWN_MS = 120_000;
 
   const [appState, setAppState] = useState<"idle" | "preview" | "processing" | "result">("idle");
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
@@ -210,7 +214,29 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [quota, setQuota] = useState<number>(3);
   const [isPro, setIsPro] = useState(false);
   const [needsRestore, setNeedsRestore] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [sessionMeLoading, setSessionMeLoading] = useState(true);
+  const [sessionId, setSessionId] = useState<string>(() => {
+    try {
+      const existing = localStorage.getItem("imageopz_session_id");
+      if (existing) return existing;
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        const id = crypto.randomUUID();
+        localStorage.setItem("imageopz_session_id", id);
+        return id;
+      }
+    } catch {
+      // ignore
+    }
+    // Very old browsers: fallback to a non-uuid unique-ish value.
+    const fallback = `sid_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    try {
+      localStorage.setItem("imageopz_session_id", fallback);
+    } catch {
+      // ignore
+    }
+    return fallback;
+  });
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [forceRestore, setForceRestore] = useState(false);
   const [hideRestoreCta, setHideRestoreCta] = useState(false);
@@ -219,43 +245,83 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [checkoutEmail, setCheckoutEmail] = useState("");
   const [isCreatingCheckout, setIsCreatingCheckout] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [showRestore, setShowRestore] = useState(false);
-  const [restoreEmail, setRestoreEmail] = useState("");
+  const [showSignIn, setShowSignIn] = useState(false);
+  const [signInEmail, setSignInEmail] = useState("");
+  const [signInSending, setSignInSending] = useState(false);
+  const [signInPurpose, setSignInPurpose] = useState<"restore">("restore");
+  const [magicLinkCooldownMs, setMagicLinkCooldownMs] = useState(0);
+  const [accountClaimed, setAccountClaimed] = useState(false);
+  const [activationPending, setActivationPending] = useState(false);
   const [progress, setProgress] = useState(0);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const [showFeedback, setShowFeedback] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
+  const pollStartedAtRef = useRef<number | null>(null);
+  const lastProgressSigRef = useRef<string>("");
+  const lastProgressChangeAtRef = useRef<number | null>(null);
+  const activationTimerRef = useRef<number | null>(null);
+  const activationStartedAtRef = useRef<number | null>(null);
+  const startActivationBridgeRef = useRef<null | (() => void)>(null);
+  const postCheckoutReconcileRanRef = useRef(false);
 
-  // Load quota on mount
+  // Load local non-authoritative hints on mount
   useEffect(() => {
-    const saved = localStorage.getItem("imageopz_quota");
-    if (saved !== null) {
-      setQuota(parseInt(saved, 10));
-    }
+    // Email is not authoritative in guest mode (backend may grant Pro via ip_hash fallback),
+    // so only keep it as a convenience for forms, not as "current account identity".
     const savedEmail = localStorage.getItem("imageopz_email");
     if (savedEmail) setAccountEmail(savedEmail);
     setForceRestore(localStorage.getItem("imageopz_force_restore") === "true");
     setHideRestoreCta(localStorage.getItem("imageopz_hide_restore_cta") === "true");
 
-    const existingSessionId = localStorage.getItem("imageopz_session_id");
-    if (existingSessionId) {
-      setSessionId(existingSessionId);
-    } else if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      const id = crypto.randomUUID();
-      localStorage.setItem("imageopz_session_id", id);
-      setSessionId(id);
-    }
+    setAccountClaimed(localStorage.getItem("imageopz_account_claimed") === "true");
   }, []);
+
+  useEffect(() => {
+    if (!showSignIn) {
+      setMagicLinkCooldownMs(0);
+      return;
+    }
+
+    const tick = () => {
+      const emailKey = signInEmail.trim().toLowerCase();
+      const key = emailKey ? `imageopz_magic_link_last_sent_at:${emailKey}` : "imageopz_magic_link_last_sent_at";
+      const raw = localStorage.getItem(key) ?? localStorage.getItem("imageopz_magic_link_last_sent_at");
+      const last = raw ? Number(raw) : 0;
+      if (!Number.isFinite(last) || last <= 0) {
+        setMagicLinkCooldownMs(0);
+        return;
+      }
+      const remaining = Math.max(0, MAGIC_LINK_COOLDOWN_MS - (Date.now() - last));
+      setMagicLinkCooldownMs(remaining);
+    };
+
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => window.clearInterval(id);
+  }, [showSignIn, signInEmail]);
 
   // Sync session state from backend (authoritative for pro + remaining credits)
   useEffect(() => {
     (async () => {
       try {
-        const me = await getSessionMe({ sessionId });
-        if (me.session_id) {
+        if (!sessionId) return;
+        const tokenToUse = accountClaimed ? accessToken : null;
+        const me = await getSessionMe({ sessionId, accessToken: tokenToUse });
+        // Keep client-generated `session_id` stable. Only adopt backend session_id if we have none.
+        if (!sessionId && me.session_id) {
           localStorage.setItem("imageopz_session_id", me.session_id);
           setSessionId(me.session_id);
+        }
+        const authed = Boolean(me.is_authenticated);
+        setIsAuthenticated(authed);
+        setAccountClaimed(authed || localStorage.getItem("imageopz_account_claimed") === "true");
+
+        // Only treat email as identity when backend says it's authenticated.
+        // Otherwise it is just a "last used email" hint for checkout/restore forms.
+        if (authed && me.email) {
+          localStorage.setItem("imageopz_email", me.email);
+          setAccountEmail(me.email);
         }
         const requiresRestore =
           Boolean(me.is_pro) &&
@@ -267,14 +333,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         setQuota(Math.max(0, remaining));
       } catch {
         // Best effort: keep local state if backend unavailable.
+      } finally {
+        setSessionMeLoading(false);
       }
     })();
-  }, [sessionId, forceRestore]);
-
-  // Save quota on change
-  useEffect(() => {
-    localStorage.setItem("imageopz_quota", quota.toString());
-  }, [quota]);
+  }, [sessionId, forceRestore, accessToken, authEmail, accountClaimed]);
 
   // `isPro` is derived from backend `/api/v1/session/me`; don't persist as a local source of truth.
 
@@ -355,13 +418,87 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       window.clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    pollStartedAtRef.current = null;
+    lastProgressSigRef.current = "";
+    lastProgressChangeAtRef.current = null;
+  }, []);
+
+  const stopActivationPolling = useCallback(() => {
+    if (activationTimerRef.current !== null) {
+      window.clearTimeout(activationTimerRef.current);
+      activationTimerRef.current = null;
+    }
+    activationStartedAtRef.current = null;
+    setActivationPending(false);
   }, []);
 
   useEffect(() => {
     return () => {
       stopPolling();
+      stopActivationPolling();
     };
-  }, [stopPolling]);
+  }, [stopPolling, stopActivationPolling]);
+
+  const startActivationBridge = useCallback(() => {
+    if (activationStartedAtRef.current !== null) return;
+    activationStartedAtRef.current = Date.now();
+    setActivationPending(true);
+
+    const tick = async () => {
+      let delay = 1500;
+      try {
+        // Prefer reconcile when available (best-effort rehydrate after checkout)
+        const me = await reconcileSession({ sessionId });
+        const requiresRestore =
+          Boolean(me.is_pro) &&
+          (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+        const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
+        const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
+        setIsPro(proActive);
+        setNeedsRestore(Boolean(me.is_pro && !proActive));
+        setQuota(Math.max(0, remaining));
+        if (proActive) {
+          localStorage.removeItem("imageopz_checkout_intent");
+          toast.success("Pro activated");
+          stopActivationPolling();
+          return;
+        }
+
+        // If backend says there's no activation pending and we're not pro, stop polling.
+        // Reconcile is not meant to be spammed indefinitely.
+        if (!me.activation_pending && !me.is_pro) {
+          localStorage.removeItem("imageopz_checkout_intent");
+          stopActivationPolling();
+          return;
+        }
+        if (me.activation_pending && typeof me.activation_retry_after_ms === "number" && me.activation_retry_after_ms > 0) {
+          delay = Math.min(10_000, Math.max(500, me.activation_retry_after_ms));
+        }
+      } catch {
+        // ignore
+        delay = 2000;
+      }
+
+      const startedAt = activationStartedAtRef.current ?? Date.now();
+      if (Date.now() - startedAt > 60_000) {
+        stopActivationPolling();
+        return;
+      }
+
+      if (activationTimerRef.current !== null) window.clearTimeout(activationTimerRef.current);
+      activationTimerRef.current = window.setTimeout(() => {
+        activationTimerRef.current = null;
+        tick();
+      }, delay);
+    };
+
+    // Run immediately on start
+    tick();
+  }, [sessionId, forceRestore, stopActivationPolling]);
+
+  useEffect(() => {
+    startActivationBridgeRef.current = startActivationBridge;
+  }, [sessionId, accessToken, forceRestore, startActivationBridge]);
 
   const startProcessing = async () => {
     setAppState("processing");
@@ -369,19 +506,52 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     stopPolling();
     setJobOrder([]);
     setJobStatuses({});
+    pollStartedAtRef.current = Date.now();
+    lastProgressSigRef.current = "";
+    lastProgressChangeAtRef.current = Date.now();
 
     try {
-      const queued = await optimizeImages({ images: files, sessionId });
+      // Preflight session state so bulk requests don't immediately trip free-tier rules
+      try {
+        const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
+        if (me.activation_pending) {
+          startActivationBridge();
+          setAppState("preview");
+          toast.info("Activating Pro…", {
+            description: "Your payment is still activating. Please retry shortly.",
+          });
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      const queued = await optimizeImages({ images: files, sessionId, accessToken: accountClaimed ? accessToken : null });
       const order = queued.results.map(r => r.job_id);
       setJobOrder(order);
 
       const loadOnce = async () => {
-        const statuses = await Promise.all(order.map(id => getJobStatus(id)));
+        let statuses: JobStatusResponse[] = [];
+        try {
+          statuses = await Promise.all(order.map(id => getJobStatus(id, { sessionId })));
+        } catch (e) {
+          // keep polling; backend may be temporarily unavailable
+          return;
+        }
         setJobStatuses(prev => {
           const next = { ...prev };
           for (const s of statuses) next[s.job_id] = s;
           return next;
         });
+
+        // Detect lack of progress / stuck jobs
+        const sig = statuses
+          .map(s => `${s.job_id}:${s.status}:${s.progress ?? ""}:${s.r2_url ?? ""}`)
+          .sort()
+          .join("|");
+        if (sig !== lastProgressSigRef.current) {
+          lastProgressSigRef.current = sig;
+          lastProgressChangeAtRef.current = Date.now();
+        }
 
         const progressValues = statuses.map(s => {
           if (typeof s.progress === "number") return Math.max(0, Math.min(100, s.progress));
@@ -401,7 +571,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           setProgress(100);
           // Refresh credits/quota from backend (authoritative for both free & pro)
           try {
-            const me = await getSessionMe({ sessionId });
+            const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
             const requiresRestore =
               Boolean(me.is_pro) &&
               (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
@@ -413,19 +583,63 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           } catch {}
           setAppState("result");
           if (statuses.some(s => s.status === "done")) fireConfetti();
+          return;
+        }
+
+        // Timeout guard: if nothing changes for 2 minutes, stop and prompt user
+        const now = Date.now();
+        const lastChange = lastProgressChangeAtRef.current ?? now;
+        if (now - lastChange > 2 * 60 * 1000) {
+          stopPolling();
+          setAppState("preview");
+          toast.error(lang === "en" ? "Processing is taking too long" : "Proses terlalu lama", {
+            description:
+              lang === "en"
+                ? "The backend is not progressing these jobs. Please try again or check the worker."
+                : "Backend tidak memproses job ini. Silakan coba lagi atau periksa worker.",
+          });
         }
       };
 
       await loadOnce();
-      pollTimerRef.current = window.setInterval(loadOnce, 3000);
+      let delay = 500;
+      const pollNext = async () => {
+        if (pollTimerRef.current === null) return;
+        await loadOnce();
+        if (pollTimerRef.current === null) return;
+        delay = Math.min(2000, Math.round(delay * 1.5));
+        pollTimerRef.current = window.setTimeout(pollNext, delay);
+      };
+      pollTimerRef.current = window.setTimeout(pollNext, delay);
     } catch (err) {
       stopPolling();
       setAppState("preview");
       if (err instanceof ImageOpzApiError) {
         // If backend rate-limits/quota-limits, reflect that locally so UI blocks further requests.
         if (!isPro && err.status === 429) {
-          setQuota(0);
-          setShowPaywall(true);
+          const code = err.payload?.error;
+          const retryAfter =
+            typeof (err.payload?.details as any)?.retry_after_ms === "number"
+              ? (err.payload?.details as any).retry_after_ms
+              : null;
+
+          if (code === "ACTIVATION_PENDING") {
+            startActivationBridge();
+            toast.warning("Activating Pro…", {
+              description: "Payment detected but not activated yet. We’ll retry automatically.",
+            });
+            if (retryAfter && retryAfter > 0) {
+              window.setTimeout(() => startProcessing(), Math.min(60_000, retryAfter));
+            }
+            return;
+          }
+
+          // Default fallback: treat as free-tier limit/rate-limit and guide user.
+          startActivationBridge();
+          toast.warning("Not activated yet", {
+            description: "Payment might still be activating. Please retry in a few seconds.",
+          });
+          return;
         }
         toast.error(lang === "en" ? "Request failed" : "Permintaan gagal", {
           description: err.payload?.message || err.message,
@@ -505,6 +719,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     // Best-effort "logout": clear local identity markers, clear session cookie, and rotate session id.
     (async () => {
       try {
+        await signOut();
+      } catch {
+        // ignore
+      }
+      try {
         setIsLoggingOut(true);
         const out = await logoutSession();
         localStorage.setItem("imageopz_session_id", out.session_id);
@@ -516,9 +735,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       }
 
       localStorage.removeItem("imageopz_email");
+      localStorage.removeItem("imageopz_account_claimed");
       localStorage.setItem("imageopz_force_restore", "true");
       localStorage.setItem("imageopz_hide_restore_cta", "true");
       setAccountEmail(null);
+      setAccountClaimed(false);
       setIsPro(false);
       setNeedsRestore(false);
       setForceRestore(true);
@@ -527,7 +748,66 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       toast.success("Logged out");
       setIsLoggingOut(false);
     })();
+  }, [signOut]);
+
+  useEffect(() => {
+    // Handle restore result banner via query string (set by /auth/callback)
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const restoreResult = params.get("restore");
+      if (!restoreResult) return;
+      if (restoreResult === "ok") {
+        toast.success("Pro restored");
+        // Ensure UI reflects restored Pro immediately (a prior logout sets these flags).
+        try {
+          localStorage.removeItem("imageopz_force_restore");
+          localStorage.removeItem("imageopz_hide_restore_cta");
+        } catch {}
+        setForceRestore(false);
+        setHideRestoreCta(false);
+      }
+      if (restoreResult === "not_pro") toast.error("No Pro plan found for this account");
+      // Clean URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("restore");
+      window.history.replaceState({}, "", url.toString());
+    } catch {
+      // ignore
+    }
   }, []);
+
+  useEffect(() => {
+    // If user just started a checkout, poll session/me for activation (guest pro via webhook)
+    if (postCheckoutReconcileRanRef.current) return;
+    if (localStorage.getItem("imageopz_checkout_intent") !== "true") return;
+    postCheckoutReconcileRanRef.current = true;
+
+    (async () => {
+      try {
+        // After returning from LemonSqueezy, ask backend to reconcile webhook activation into this session.
+        await reconcileSession({ sessionId, accessToken: accountClaimed ? accessToken : null });
+      } catch {
+        // best effort
+      }
+
+      try {
+        const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
+        const requiresRestore =
+          Boolean(me.is_pro) &&
+          (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+        const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
+        setIsPro(proActive);
+        setNeedsRestore(Boolean(me.is_pro && !proActive));
+        const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
+        setQuota(Math.max(0, remaining));
+
+        if (me.activation_pending) startActivationBridge();
+        if (proActive) localStorage.removeItem("imageopz_checkout_intent");
+      } catch {
+        startActivationBridge();
+      }
+    })();
+  }, [startActivationBridge]);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-foreground selection:text-background">
@@ -536,22 +816,37 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       {/* Header */}
       <header className="border-b border-border bg-background sticky top-0 z-50 py-2">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
-              <div className="w-4 h-4 border-2 border-background rounded-sm"></div>
-            </div>
-            <span className="font-serif text-xl font-bold tracking-tight">{t.title}</span>
-          </div>
+           <div className="flex items-center gap-2">
+             <img
+               src="/logo.png"
+               alt="ImageOpz"
+               className="h-18 w-auto object-contain"
+             />
+           </div>
           <div className="flex flex-wrap sm:flex-nowrap items-center gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
-              {isPro ? `${quota} ${t.optimizationsLeft}` : `${quota} ${t.optimizationsLeft}`}
+              {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
             </span>
+
+            {/* Pro / Purchase controls */}
             {isPro ? (
               <div className="flex items-center gap-2">
                 <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 max-w-[220px] truncate">
-                  {accountEmail ? `Pro (${accountEmail})` : "Pro"}
+                  {isAuthenticated && accountEmail ? `Pro (${accountEmail})` : "Pro"}
                 </div>
+                {!isAuthenticated && !loadingAuth && !accountClaimed && (
+                  <button
+                    className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={() => {
+                      setSignInPurpose("restore");
+                      setShowSignIn(true);
+                    }}
+                    type="button"
+                  >
+                    Claim Pro
+                  </button>
+                )}
                 <button
                   className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
                   onClick={handleLogout}
@@ -560,17 +855,43 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 >
                   {isLoggingOut ? "Logging out..." : "Logout"}
                 </button>
+                {quota <= 0 && (
+                  <button
+                    className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                    onClick={() => setShowPaywall(true)}
+                    type="button"
+                  >
+                    Add credits
+                  </button>
+                )}
               </div>
             ) : (
-              <button 
-                className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
-                onClick={() => {
-                  if (!hideRestoreCta && needsRestore) setShowRestore(true);
-                  else setShowPaywall(true);
-                }}
-              >
-                {hideRestoreCta ? "Upgrade to Pro" : needsRestore ? "Restore Pro" : "Upgrade to Pro"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                  onClick={() => {
+                    if (!hideRestoreCta && needsRestore) {
+                      setSignInPurpose("restore");
+                      setShowSignIn(true);
+                      return;
+                    }
+                    else setShowPaywall(true);
+                  }}
+                  type="button"
+                >
+                  {hideRestoreCta ? "Upgrade to Pro" : needsRestore ? "Restore Pro" : "Upgrade to Pro"}
+                </button>
+                {accountClaimed && (
+                  <button
+                    className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={handleLogout}
+                    disabled={isLoggingOut}
+                    type="button"
+                  >
+                    {isLoggingOut ? "Logging out..." : "Logout"}
+                  </button>
+                )}
+              </div>
             )}
             <div className="flex gap-2">
               <button 
@@ -737,6 +1058,33 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     </motion.p>
                   </AnimatePresence>
                 </div>
+
+                {activationPending && (
+                  <div className="text-sm text-muted-foreground">
+                    Activating Pro… (waiting for webhook)
+                  </div>
+                )}
+
+                {/* Debug-friendly per-job status */}
+                {jobOrder.length > 0 && (
+                  <div className="text-left max-w-xl mx-auto space-y-2 text-xs text-muted-foreground">
+                    {jobOrder.map((id) => {
+                      const s = jobStatuses[id];
+                      if (!s) return (
+                        <div key={id} className="flex justify-between">
+                          <span className="font-mono truncate max-w-[70%]">{id}</span>
+                          <span>loading…</span>
+                        </div>
+                      );
+                      return (
+                        <div key={id} className="flex justify-between gap-3">
+                          <span className="font-mono truncate max-w-[70%]">{s.original_filename}</span>
+                          <span>{s.status}{typeof s.progress === "number" ? ` (${Math.round(s.progress)}%)` : ""}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -891,10 +1239,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       <footer className="w-full bg-secondary/30 border-t border-border px-6 py-8">
         <div className="container mx-auto max-w-5xl flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
-              <div className="w-3 h-3 border-2 border-background rounded-sm"></div>
-            </div>
-            <span className="font-serif font-bold text-primary">{t.title}</span>
+            <img src="/favicon.png" alt="ImageOpz" className="h-10 w-auto object-contain" />
             <span className="ml-2">{t.footerRights}</span>
           </div>
           <div className="flex gap-6 font-medium">
@@ -953,10 +1298,14 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 >
                   <CreditCard className="w-4 h-4 mr-2" /> {t.buyCredits}
                 </Button>
-                <button
-                  onClick={() => setShowRestore(true)}
-                  className="mt-3 w-full text-xs font-semibold text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
-                >
+                 <button
+                    onClick={() => {
+                      stopActivationPolling();
+                      setSignInPurpose("restore");
+                      setShowSignIn(true);
+                    }}
+                    className="mt-3 w-full text-xs font-semibold text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
+                  >
                   {lang === "en" ? "Already purchased? Restore Pro" : "Sudah pernah beli? Pulihkan Pro"}
                 </button>
                 <p className="text-xs text-center text-muted-foreground mt-3 flex items-center justify-center gap-1">
@@ -965,6 +1314,96 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               </div>
             </CardContent>
           </Card>
+        </DialogContent>
+      </Dialog>
+
+      {/* Sign In Modal (Supabase Magic Link) */}
+      <Dialog open={showSignIn} onOpenChange={setShowSignIn}>
+        <DialogContent className="sm:max-w-md border-border bg-card shadow-xl rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-serif">{signInPurpose === "restore" ? "Restore Pro" : "Sign in"}</DialogTitle>
+            <DialogDescription>
+              {signInPurpose === "restore"
+                ? "We’ll email you a magic link. After signing in, we’ll verify whether this account has Pro."
+                : "We’ll email you a magic link. No password required."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Email</Label>
+            <Input
+              type="email"
+              placeholder={t.emailPlaceholder}
+              value={signInEmail}
+              onChange={(e) => setSignInEmail(e.target.value)}
+              disabled={signInSending}
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" disabled={signInSending} onClick={() => setShowSignIn(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={signInSending || magicLinkCooldownMs > 0}
+              onClick={() => {
+                const email = signInEmail.trim();
+                if (!email || !email.includes("@")) {
+                  toast.error("Email required");
+                  return;
+                }
+
+                const emailKey = email.trim().toLowerCase();
+                const key = emailKey ? `imageopz_magic_link_last_sent_at:${emailKey}` : "imageopz_magic_link_last_sent_at";
+                const raw = localStorage.getItem(key) ?? localStorage.getItem("imageopz_magic_link_last_sent_at");
+                const last = raw ? Number(raw) : 0;
+                const remaining =
+                  Number.isFinite(last) && last > 0 ? Math.max(0, MAGIC_LINK_COOLDOWN_MS - (Date.now() - last)) : 0;
+                if (remaining > 0) {
+                  toast.info("Please wait before requesting another link", {
+                    description: `Try again in ${Math.ceil(remaining / 1000)}s.`,
+                  });
+                  return;
+                }
+                (async () => {
+                  try {
+                    setSignInSending(true);
+                    stopActivationPolling();
+                    if (signInPurpose === "restore") {
+                      localStorage.setItem("imageopz_restore_intent", "true");
+                      localStorage.setItem("imageopz_restore_email", email);
+                    } else {
+                      localStorage.removeItem("imageopz_restore_intent");
+                      localStorage.removeItem("imageopz_restore_email");
+                    }
+
+                    // Apply cooldown immediately (even if Supabase returns 429) to avoid spamming.
+                    const emailKey = email.trim().toLowerCase();
+                    const key = emailKey ? `imageopz_magic_link_last_sent_at:${emailKey}` : "imageopz_magic_link_last_sent_at";
+                    localStorage.setItem(key, String(Date.now()));
+                    setMagicLinkCooldownMs(MAGIC_LINK_COOLDOWN_MS);
+
+                    await signInWithMagicLink(email);
+                    toast.success("Magic link sent");
+                    setShowSignIn(false);
+                  } catch (err) {
+                    const msg = (err as any)?.message ? String((err as any).message) : "";
+                    if (msg.toLowerCase().includes("too many")) {
+                      toast.error("Too many requests", { description: "Please wait 1–2 minutes and try again." });
+                    } else {
+                      toast.error("Failed to send magic link");
+                    }
+                  } finally {
+                    setSignInSending(false);
+                  }
+                })();
+              }}
+            >
+              {signInSending
+                ? "Sending..."
+                : magicLinkCooldownMs > 0
+                  ? `Send magic link (${Math.ceil(magicLinkCooldownMs / 1000)}s)`
+                  : "Send magic link"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -1008,12 +1447,14 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               }
 
               (async () => {
-                  try {
-                    setIsCreatingCheckout(true);
-                    const checkout = await createLemonSqueezyCheckout({
-                      email,
-                      sessionId,
-                    });
+                try {
+                  setIsCreatingCheckout(true);
+                  const checkout = await createLemonSqueezyCheckout({
+                    email,
+                    sessionId,
+                    accessToken: accountClaimed ? accessToken : null,
+                  });
+                  localStorage.setItem("imageopz_checkout_intent", "true");
                   localStorage.setItem("imageopz_email", email);
                   setAccountEmail(email);
                   if (checkout.session_id) {
@@ -1022,7 +1463,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   }
                   // Sync backend session state before redirect (cookie/session may be updated server-side)
                   try {
-                    const me = await getSessionMe({ sessionId: checkout.session_id ?? sessionId });
+                    const me = await getSessionMe({ sessionId: checkout.session_id ?? sessionId, accessToken });
                     const requiresRestore =
                       Boolean(me.is_pro) && (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
                     setIsPro(Boolean(me.is_pro && me.pro_verified && !requiresRestore));
@@ -1051,80 +1492,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             disabled={isCreatingCheckout}
             >
               {isCreatingCheckout ? (lang === "en" ? "Redirecting..." : "Mengalihkan...") : t.confirm}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Restore Pro Modal */}
-      <Dialog open={showRestore} onOpenChange={setShowRestore}>
-        <DialogContent className="sm:max-w-md border-border bg-card shadow-xl rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="font-serif">{lang === "en" ? "Restore Pro" : "Pulihkan Pro"}</DialogTitle>
-            <DialogDescription>
-              {lang === "en"
-                ? "If you already purchased Pro, enter your purchase email to relink this browser session."
-                : "Jika Anda sudah pernah membeli Pro, masukkan email pembelian untuk menghubungkan ulang sesi browser ini."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label>{lang === "en" ? "Email" : "Email"}</Label>
-            <Input
-              type="email"
-              placeholder={t.emailPlaceholder}
-              value={restoreEmail}
-              onChange={(e) => setRestoreEmail(e.target.value)}
-            />
-          </div>
-          <div className="flex justify-end gap-3 pt-4">
-            <Button variant="outline" onClick={() => setShowRestore(false)}>
-              {t.cancel}
-            </Button>
-            <Button
-              onClick={() => {
-                const email = restoreEmail.trim();
-                if (!email || !email.includes("@")) {
-                  toast.error(lang === "en" ? "Email required" : "Email wajib diisi");
-                  return;
-                }
-
-                (async () => {
-                  try {
-                    const restored = await restoreProSession({ email, sessionId });
-                    localStorage.setItem("imageopz_session_id", restored.session_id);
-                    setSessionId(restored.session_id);
-                    setNeedsRestore(false);
-                    localStorage.removeItem("imageopz_force_restore");
-                    setForceRestore(false);
-                    localStorage.removeItem("imageopz_hide_restore_cta");
-                    setHideRestoreCta(false);
-                    localStorage.setItem("imageopz_email", email);
-                    setAccountEmail(email);
-                    // Refresh authoritative session state
-                    try {
-                      const me = await getSessionMe({ sessionId: restored.session_id });
-                      const requiresRestore =
-                        Boolean(me.is_pro) && (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
-                      setIsPro(Boolean(me.is_pro && me.pro_verified && !requiresRestore));
-                      setNeedsRestore(requiresRestore);
-                      if (!me.is_pro) setQuota(Math.max(0, me.credits_remaining));
-                    } catch {}
-                    setShowRestore(false);
-                    setShowPaywall(false);
-                    toast.success(lang === "en" ? "Pro restored" : "Pro dipulihkan");
-                  } catch (err) {
-                    if (err instanceof ImageOpzApiError) {
-                      toast.error(lang === "en" ? "Restore failed" : "Gagal memulihkan", {
-                        description: err.payload?.message || err.message,
-                      });
-                    } else {
-                      toast.error(lang === "en" ? "Restore failed" : "Gagal memulihkan");
-                    }
-                  }
-                })();
-              }}
-            >
-              {lang === "en" ? "Restore" : "Pulihkan"}
             </Button>
           </div>
         </DialogContent>
@@ -1233,6 +1600,7 @@ function GlobalRouter() {
     <Routes>
       <Route path="/" element={<AppContent lang="en" />} />
       <Route path="/id" element={<AppContent lang="id" />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="*" element={<AppContent lang="en" />} />
     </Routes>
   );
