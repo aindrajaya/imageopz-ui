@@ -30,6 +30,7 @@ import {
   logoutSession,
   ImageOpzApiError,
   type JobStatusResponse,
+  type SessionMeResponse,
 } from "@/lib/imageopzApi";
 
 import { Button } from "@/components/ui/button";
@@ -256,15 +257,113 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [progress, setProgress] = useState(0);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
+  const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
   const [showFeedback, setShowFeedback] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const pollStartedAtRef = useRef<number | null>(null);
   const lastProgressSigRef = useRef<string>("");
   const lastProgressChangeAtRef = useRef<number | null>(null);
+  const pendingJobIdsRef = useRef<Set<string>>(new Set<string>());
+  const pollCursorRef = useRef(0);
+  const pollBackoffMsRef = useRef(0);
   const activationTimerRef = useRef<number | null>(null);
   const activationStartedAtRef = useRef<number | null>(null);
   const startActivationBridgeRef = useRef<null | (() => void)>(null);
   const postCheckoutReconcileRanRef = useRef(false);
+  const sessionMeInFlightRef = useRef<Promise<SessionMeResponse> | null>(null);
+  const lastSessionMeAtRef = useRef(0);
+  const lastSessionMeRef = useRef<SessionMeResponse | null>(null);
+  const idleMeTimerRef = useRef<number | null>(null);
+
+  const MAX_STATUS_CHECKS_PER_TICK = 6;
+  const MAX_STATUS_CONCURRENCY = 4;
+  const POLL_BACKOFF_MAX_MS = 15_000;
+  const POLL_BACKOFF_MIN_MS = 2_500;
+  const SESSION_ME_MIN_INTERVAL_MS = 5_000;
+  const SESSION_ME_IDLE_CAP_MS = 45_000;
+
+  async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  useEffect(() => {
+    jobStatusesRef.current = jobStatuses;
+  }, [jobStatuses]);
+
+  const applySessionMe = useCallback((me: SessionMeResponse) => {
+    const authed = Boolean(me.is_authenticated);
+    setIsAuthenticated(authed);
+    setAccountClaimed(authed || localStorage.getItem("imageopz_account_claimed") === "true");
+
+    if (authed && me.email) {
+      localStorage.setItem("imageopz_email", me.email);
+      setAccountEmail(me.email);
+    }
+
+    const requiresRestore =
+      Boolean(me.is_pro) &&
+      (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
+    const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
+    setIsPro(proActive);
+    setNeedsRestore(requiresRestore);
+    const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
+    setQuota(Math.max(0, remaining));
+  }, [forceRestore]);
+
+  const refreshSessionMe = useCallback(async (params?: {
+    force?: boolean;
+    sessionIdOverride?: string | null;
+    accessTokenOverride?: string | null;
+    reason?: string;
+  }) => {
+    const sid = params?.sessionIdOverride ?? sessionId;
+    if (!sid) throw new Error("Missing sessionId");
+
+    const now = Date.now();
+    const force = Boolean(params?.force);
+    if (!force && now - lastSessionMeAtRef.current < SESSION_ME_MIN_INTERVAL_MS && lastSessionMeRef.current) {
+      return lastSessionMeRef.current;
+    }
+
+    if (!force && sessionMeInFlightRef.current) return await sessionMeInFlightRef.current;
+
+    const tokenToUse = typeof params?.accessTokenOverride === "string" ? params.accessTokenOverride : (accountClaimed ? accessToken : null);
+    const p = (async () => {
+      if (import.meta.env.DEV) {
+        const g = globalThis as any;
+        if (!g.__imageopzSessionMeRefreshLogged) g.__imageopzSessionMeRefreshLogged = 0;
+        g.__imageopzSessionMeRefreshLogged++;
+        // eslint-disable-next-line no-console
+        console.log("[imageopz] /session/me refresh", {
+          n: g.__imageopzSessionMeRefreshLogged,
+          reason: params?.reason || "unspecified",
+          force,
+        });
+      }
+      const me = await getSessionMe({ sessionId: sid, accessToken: tokenToUse });
+      lastSessionMeAtRef.current = Date.now();
+      lastSessionMeRef.current = me;
+      applySessionMe(me);
+      return me;
+    })();
+
+    sessionMeInFlightRef.current = p;
+    try {
+      return await p;
+    } finally {
+      if (sessionMeInFlightRef.current === p) sessionMeInFlightRef.current = null;
+    }
+  }, [sessionId, accountClaimed, accessToken, applySessionMe]);
 
   // Load local non-authoritative hints on mount
   useEffect(() => {
@@ -307,38 +406,79 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     (async () => {
       try {
         if (!sessionId) return;
-        const tokenToUse = accountClaimed ? accessToken : null;
-        const me = await getSessionMe({ sessionId, accessToken: tokenToUse });
-        // Keep client-generated `session_id` stable. Only adopt backend session_id if we have none.
-        if (!sessionId && me.session_id) {
-          localStorage.setItem("imageopz_session_id", me.session_id);
-          setSessionId(me.session_id);
-        }
-        const authed = Boolean(me.is_authenticated);
-        setIsAuthenticated(authed);
-        setAccountClaimed(authed || localStorage.getItem("imageopz_account_claimed") === "true");
-
-        // Only treat email as identity when backend says it's authenticated.
-        // Otherwise it is just a "last used email" hint for checkout/restore forms.
-        if (authed && me.email) {
-          localStorage.setItem("imageopz_email", me.email);
-          setAccountEmail(me.email);
-        }
-        const requiresRestore =
-          Boolean(me.is_pro) &&
-          (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
-        const proActive = Boolean(me.is_pro && me.pro_verified && !requiresRestore);
-        setIsPro(proActive);
-        setNeedsRestore(requiresRestore);
-        const remaining = proActive ? me.pro_credits_remaining : me.credits_remaining;
-        setQuota(Math.max(0, remaining));
+        await refreshSessionMe({ force: sessionMeLoading });
       } catch {
         // Best effort: keep local state if backend unavailable.
       } finally {
         setSessionMeLoading(false);
       }
     })();
-  }, [sessionId, forceRestore, accessToken, authEmail, accountClaimed]);
+  }, [sessionId, refreshSessionMe, sessionMeLoading]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const onFocus = () => {
+      refreshSessionMe({ reason: "focus" }).catch(() => {});
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshSessionMe({ reason: "visibility" }).catch(() => {});
+    };
+
+    const onOnline = () => {
+      refreshSessionMe({ reason: "online" }).catch(() => {});
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [sessionId, refreshSessionMe]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const clear = () => {
+      if (idleMeTimerRef.current !== null) {
+        window.clearTimeout(idleMeTimerRef.current);
+        idleMeTimerRef.current = null;
+      }
+    };
+
+    const schedule = () => {
+      clear();
+      idleMeTimerRef.current = window.setTimeout(async () => {
+        idleMeTimerRef.current = null;
+
+        const isVisible = document.visibilityState === "visible";
+        const idleUi = appState !== "processing";
+        const noJobs = pendingJobIdsRef.current.size === 0;
+        const notActivating = !activationPending;
+        if (!isVisible || !idleUi || !noJobs || !notActivating) {
+          schedule();
+          return;
+        }
+
+        const since = Date.now() - (lastSessionMeAtRef.current || 0);
+        if (since >= SESSION_ME_IDLE_CAP_MS) {
+          try {
+            await refreshSessionMe({ reason: "idle_cap" });
+          } catch {
+            // ignore
+          }
+        }
+        schedule();
+      }, Math.max(5_000, Math.round(SESSION_ME_IDLE_CAP_MS / 2)));
+    };
+
+    schedule();
+    return () => clear();
+  }, [sessionId, appState, activationPending, refreshSessionMe]);
 
   // `isPro` is derived from backend `/api/v1/session/me`; don't persist as a local source of truth.
 
@@ -507,6 +647,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     stopPolling();
     setJobOrder([]);
     setJobStatuses({});
+    jobStatusesRef.current = {};
     pollStartedAtRef.current = Date.now();
     lastProgressSigRef.current = "";
     lastProgressChangeAtRef.current = Date.now();
@@ -514,7 +655,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     try {
       // Preflight session state so bulk requests don't immediately trip free-tier rules
       try {
-        const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
+        const me = await refreshSessionMe({ force: true });
         if (me.activation_pending) {
           startActivationBridge();
           setAppState("preview");
@@ -529,23 +670,59 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       const queued = await optimizeImages({ images: files, sessionId, accessToken: accountClaimed ? accessToken : null });
       const order = queued.results.map(r => r.job_id);
       setJobOrder(order);
+      pendingJobIdsRef.current = new Set(order);
+      pollCursorRef.current = 0;
+      pollBackoffMsRef.current = 0;
 
       const loadOnce = async () => {
-        let statuses: JobStatusResponse[] = [];
-        try {
-          statuses = await Promise.all(order.map(id => getJobStatus(id, { sessionId })));
-        } catch (e) {
-          // keep polling; backend may be temporarily unavailable
-          return;
+        const pending = Array.from(pendingJobIdsRef.current) as string[];
+        if (pending.length === 0) return;
+
+        const start = pollCursorRef.current % pending.length;
+        const picks: string[] = [];
+        const maxPicks = Math.min(MAX_STATUS_CHECKS_PER_TICK, pending.length);
+        for (let i = 0; i < maxPicks; i++) picks.push(pending[(start + i) % pending.length]);
+        pollCursorRef.current = (start + maxPicks) % pending.length;
+
+        let saw429 = false;
+        const statuses = await mapLimit(
+          picks,
+          MAX_STATUS_CONCURRENCY,
+          async (id): Promise<JobStatusResponse | null> => {
+            try {
+              return await getJobStatus(id, { sessionId });
+            } catch (e) {
+              if (e instanceof ImageOpzApiError && e.status === 429) saw429 = true;
+              return null;
+            }
+          }
+        );
+
+        const fresh = statuses.filter(Boolean) as JobStatusResponse[];
+        if (fresh.length > 0) {
+          const nextMap = { ...jobStatusesRef.current };
+          for (const s of fresh) nextMap[s.job_id] = s;
+          jobStatusesRef.current = nextMap;
+          setJobStatuses(nextMap);
+          for (const s of fresh) {
+            if (s.status === "done" || s.status === "failed") pendingJobIdsRef.current.delete(s.job_id);
+          }
         }
-        setJobStatuses(prev => {
-          const next = { ...prev };
-          for (const s of statuses) next[s.job_id] = s;
-          return next;
-        });
+
+        if (saw429) {
+          const next = Math.min(
+            POLL_BACKOFF_MAX_MS,
+            Math.max(POLL_BACKOFF_MIN_MS, Math.round((pollBackoffMsRef.current || POLL_BACKOFF_MIN_MS) * 1.8))
+          );
+          const jitter = Math.round(next * (0.1 * (Math.random() - 0.5)));
+          pollBackoffMsRef.current = Math.max(POLL_BACKOFF_MIN_MS, next + jitter);
+        } else {
+          pollBackoffMsRef.current = Math.max(0, Math.round(pollBackoffMsRef.current * 0.6));
+        }
 
         // Detect lack of progress / stuck jobs
-        const sig = statuses
+        const allKnown = order.map(id => jobStatusesRef.current[id]).filter(Boolean) as JobStatusResponse[];
+        const sig = allKnown
           .map(s => `${s.job_id}:${s.status}:${s.progress ?? ""}:${s.r2_url ?? ""}`)
           .sort()
           .join("|");
@@ -554,7 +731,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           lastProgressChangeAtRef.current = Date.now();
         }
 
-        const progressValues = statuses.map(s => {
+        const progressValues = allKnown.map(s => {
           if (typeof s.progress === "number") return Math.max(0, Math.min(100, s.progress));
           if (s.status === "done" || s.status === "failed") return 100;
           if (s.status === "processing") return 50;
@@ -566,13 +743,13 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             : progressValues.reduce((a, b) => a + b, 0) / progressValues.length;
         setProgress(avg);
 
-        const allFinished = statuses.every(s => s.status === "done" || s.status === "failed");
+        const allFinished = pendingJobIdsRef.current.size === 0;
         if (allFinished) {
           stopPolling();
           setProgress(100);
           // Refresh credits/quota from backend (authoritative for both free & pro)
           try {
-            const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
+            const me = await refreshSessionMe({ force: true });
             const requiresRestore =
               Boolean(me.is_pro) &&
               (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
@@ -603,15 +780,22 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       };
 
       await loadOnce();
-      let delay = 500;
       const pollNext = async () => {
         if (pollTimerRef.current === null) return;
         await loadOnce();
         if (pollTimerRef.current === null) return;
-        delay = Math.min(2000, Math.round(delay * 1.5));
+
+        const pendingCount = pendingJobIdsRef.current.size;
+        let delay =
+          pendingCount >= 25 ? 4500 :
+          pendingCount >= 15 ? 3500 :
+          pendingCount >= 8 ? 2500 :
+          pendingCount >= 3 ? 1600 :
+          1200;
+        if (pollBackoffMsRef.current > 0) delay = Math.max(delay, pollBackoffMsRef.current);
         pollTimerRef.current = window.setTimeout(pollNext, delay);
       };
-      pollTimerRef.current = window.setTimeout(pollNext, delay);
+      pollTimerRef.current = window.setTimeout(pollNext, 700);
     } catch (err) {
       stopPolling();
       setAppState("preview");
@@ -669,6 +853,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setProgress(0);
     setJobOrder([]);
     setJobStatuses({});
+    jobStatusesRef.current = {};
   };
 
   const originalSize = files.reduce((acc, f) => acc + f.size, 0);
@@ -792,7 +977,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       }
 
       try {
-        const me = await getSessionMe({ sessionId, accessToken: accountClaimed ? accessToken : null });
+        const me = await refreshSessionMe({ force: true });
         const requiresRestore =
           Boolean(me.is_pro) &&
           (forceRestore || Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
@@ -808,7 +993,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         startActivationBridge();
       }
     })();
-  }, [startActivationBridge]);
+  }, [startActivationBridge, refreshSessionMe, sessionId, accessToken, accountClaimed, forceRestore]);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-foreground selection:text-background">
@@ -1464,7 +1649,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   }
                   // Sync backend session state before redirect (cookie/session may be updated server-side)
                   try {
-                    const me = await getSessionMe({ sessionId: checkout.session_id ?? sessionId, accessToken });
+                    const me = await refreshSessionMe({
+                      force: true,
+                      sessionIdOverride: checkout.session_id ?? sessionId,
+                      accessTokenOverride: accessToken,
+                    });
                     const requiresRestore =
                       Boolean(me.is_pro) && (Boolean(me.needs_restore) || !Boolean(me.pro_verified) || me.pro_source === "unknown");
                     setIsPro(Boolean(me.is_pro && me.pro_verified && !requiresRestore));
