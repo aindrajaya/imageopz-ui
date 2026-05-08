@@ -76,10 +76,15 @@ Backend dapat set cookie `imageopz_sid`. UI tetap mengirim header `X-Session-Id`
 
 ### 5.2 Processing
 Saat user klik “Start Optimization”:
-1) Preflight `GET /api/v1/session/me` untuk membaca state server terbaru.
+1) Preflight `GET /api/v1/session/me` untuk membaca state server terbaru (**forced refresh**).
 2) `POST /api/v1/optimize` (multipart) mengembalikan daftar `job_id`.
-3) Poll `GET /api/v1/status/{job_id}` dengan backoff (mis. 0.5s → 1s → 2s) sampai status `done/failed`.
-4) Setelah semua selesai: refresh `GET /api/v1/session/me` untuk update credits.
+3) Poll `GET /api/v1/status/{job_id}` secara **hemat request**:
+   - Hanya polling job yang masih `pending/processing` (job `done/failed` dikeluarkan dari daftar polling).
+   - Per tick ada **budget** jumlah status check (contoh implementasi: max 6 job per tick) dengan **round-robin** agar job banyak (Pro 30 file) tidak meledakkan request.
+   - Batasi concurrency status request (contoh implementasi: max 4 bersamaan).
+   - Delay polling adaptif berdasarkan jumlah job pending.
+   - Jika `429` saat status polling: lakukan backoff (exponential-ish + jitter) sebelum tick berikutnya.
+4) Setelah semua selesai: refresh `GET /api/v1/session/me` untuk update credits (**forced refresh**).
 
 Error handling:
 - Jika backend mengembalikan `429` dengan error activation pending (lihat 7.2), UI **tidak** menganggap credits habis; UI melakukan retry sesuai `retry_after_ms`.
@@ -104,6 +109,24 @@ Frontend menyimpan state:
 Untuk mencegah guest mode rusak oleh token Supabase yang tersimpan, UI memakai flag:
 - `imageopz_account_claimed=true` hanya diset saat restore/claim sukses (proOk).
 - UI **baru** mengirim `Authorization` ke backend jika `account_claimed=true` (atau sedang menjalankan flow restore).
+
+### 6.3 Policy pemanggilan `GET /api/v1/session/me` (anti spam)
+Tujuan: `session/me` adalah endpoint penting (authoritative untuk entitlements & quota) tapi tidak boleh di-polling agresif.
+
+Aturan:
+- Refresh `session/me` harus **event-driven only** (tanpa idle polling), dipicu oleh:
+  - `window focus`
+  - `document visibilitychange` (saat tab menjadi visible)
+  - `online` (setelah reconnect)
+  - momen flow yang memang butuh state terbaru (**force refresh**), misalnya:
+    - sebelum start optimize (preflight)
+    - setelah semua job selesai (update credits)
+    - setelah kembali dari LemonSoutum & reconcile
+    - setelah logout / rotate session
+- Implementasi refresh harus punya proteksi:
+  - **in-flight dedupe**: jika request `session/me` sedang berjalan, pemanggil lain menunggu promise yang sama.
+  - **minimum interval throttle** (contoh: 5 detik) untuk mencegah burst dari event yang berdekatan.
+  - **force bypass** untuk momen penting di atas (agar UX tidak stale).
 
 ## 7) Monetisasi: Checkout → Pro session → (opsional) Claim Pro
 
@@ -183,9 +206,10 @@ Header menampilkan:
 
 ## 10) Non-Functional Requirements
 - FCP cepat, SPA ringan.
-- Polling status tidak spam: backoff & stop saat done/failed.
+- Polling status tidak spam: stop polling job `done/failed`, batasi budget per tick + concurrency, dan backoff jika `429`.
 - Jangan memanggil `session/reconcile` tanpa alasan (stop jika `activation_pending=false` dan bukan Pro).
 - Jangan mengirim `Authorization` untuk guest request (kecuali saat claim/restore atau accountClaimed=true).
+- `GET /api/v1/session/me` tidak boleh spam: event-driven only + in-flight dedupe + throttle minimal.
 
 ## 11) Acceptance Checklist (Manual)
 1) Guest:
