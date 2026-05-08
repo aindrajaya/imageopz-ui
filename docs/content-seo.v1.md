@@ -1,0 +1,141 @@
+Berikut kumpulan **semua tulisan (copy)** yang dipakai di landing page + modal pembayaran di page ini (bahasa **EN** dan **ID**), bersumber dari `src/App.tsx`.
+
+**Landing page (EN)**
+- ImageOpz
+- optimizations left
+- Upgrade to Pro
+- LCP-Killer Tool ⚡
+- Refine your visuals
+- in seconds.
+- Professional-grade AI image processing for creators. Simple, organic, and lightning fast.
+- Drop your image here
+- Support for JPEG, PNG, WEBP up to 10MB per file.
+- Crunching pixels...
+- Applying advanced WebP/AVIF compression.
+- Progress stages:
+  - Analyzing image...
+  - Extracting features...
+  - Applying compression...
+  - Optimizing format...
+  - Finalizing...
+- High Traffic Alert
+- Queue
+- You can wait, or leave your email. We'll send you the optimized file when it's done.
+- your@email.com
+- Notify Me
+- We'll email you the result!
+- Optimization Complete
+- Massive Savings!
+- Original Size
+- New Size
+- reduction
+- Est. Load Time
+- Lighthouse Boost!
+- Download Optimized Image
+- Share Result
+- Copied to clipboard!
+- I just squashed an image by 85% using ImageOpz! ⚡
+- Optimize another image
+- Privacy Warning: This file will be permanently deleted from our servers in 7 days.
+- (Varian dinamis saat ada expiry dari backend) `Privacy: files expire at <formatted>.`
+- How it Works
+- A brutally simple pipeline designed to solve one problem: bloated AI-generated images ruining your website's performance.
+- Drop & Validate
+- Client-side validation ensures you only send valid images. 10MB limit keeps our Edge network fast and responsive without arbitrary bloat.
+- Edge Processing
+- Next.js Edge functions validate and rate-limit, passing your image to our dedicated Vultr instance powered by highly tuned Python compression algorithms.
+- Deliver & Wipe
+- You get a WebP/AVIF file that's 80%+ smaller. For your privacy, the raw and optimized files are purged from our hybrid R2 storage within 7 days.
+- © 2026 ImageOpz. All rights reserved.
+- Terms of Service
+- Privacy Policy
+- Contact
+
+**Landing page (ID)**
+- ImageOpz
+- optimasi tersisa
+- Upgrade ke Pro
+- Alat LCP-Killer ⚡
+- Ubah Gambar AI Raksasa
+- Menjadi WebP/AVIF Super Cepat dalam Detik.
+- Solusi instan optimasi gambar untuk developer web. Kompresi otomatis tanpa membebani performa browser Anda.
+- Jatuhkan gambar AI di sini
+- Mendukung JPEG, PNG, WEBP (Max. 10MB)
+- Memproses gambar...
+- Melakukan kompresi super cepat ke format Next-Gen.
+- Progress stages:
+  - Menganalisis gambar...
+  - Mengekstraksi fitur...
+  - Menerapkan kompresi...
+  - Mengoptimalkan format...
+  - Menyelesaikan...
+- Antrean sedang ramai
+- Posisi
+- Masukkan email Anda, kami akan mengirimkan hasilnya agar Anda tidak perlu menatap layar ini.
+- email@anda.com
+- Beritahu Saya
+- Email tersimpan. Kami akan kabari Anda!
+- Optimasi Selesai
+- Performa Maksimal!
+- Ukuran Awal
+- Ukuran Baru
+- Turun
+- Estimasi Load
+- Lighthouse Boost!
+- Unduh Gambar
+- Pamerkan Hasil Ini
+- Disalin ke papan klip!
+- Saya baru saja menghemat ukuran gambar sebesar 85% dengan ImageOpz! ⚡
+- Optimasi gambar lain
+- Peringatan Privasi: File ini akan dihapus permanen dari server kami dalam 7 Hari.
+- (Varian dinamis saat ada expiry dari backend) `Privasi: file kedaluwarsa pada <formatted>.`
+- Cara Kerja
+- Alur sederhana yang dirancang untuk mengatasi gambar AI berukuran raksasa yang memperlambat website Anda.
+- Validasi Loka
+- Validasi sisi klien memastikan hanya gambar valid yang diproses. Batas 10MB menjaga jaringan Edge tetap responsif.
+- Pemrosesan Edge
+- Fungsi Edge memvalidasi dan membatasi traffic, lalu mengirimkan gambar Anda ke engine kompresi cerdas kami.
+- Kirim & Hapus
+- Anda mendapatkan file WebP/AVIF yang jauh lebih kecil. Demi privasi Anda, file asli dan hasil akan dihapus dalam 7 hari.
+- © 2026 ImageOpz. Hak cipta dilindungi undang-undang.
+- Syarat Ketentuan
+- Kebijakan Privasi
+- Kontak
+
+**Modal pembayaran 1: Paywall / Pro Plan**
+- Badge/label: `Pro Plan` (EN) / `Paket Pro` (ID)
+- Judul: `Out of Free Credits.` (EN) / `Kehabisan Kuota Gratis.` (ID)
+- Deskripsi: `Keep your websites blazing fast. Upgrade to optimize more images instantly.` (EN) / `Dukung alat indie kami dan dapatkan akses tak terbatas.` (ID)
+- Fitur:
+  - `100 image optimizations` / `100 Credits untuk Optimasi`
+  - `Priority Queue Access` / `Prioritas Antrean`
+  - `40-day file retention` / `Retensi file 40 hari`
+  - `Support indie development ❤️` / `Mendukung pengembangan alat indie ini ❤️`
+- Harga (hardcoded): `100 Credits` dan `$9.99`
+- Tombol: `Buy Credits` (EN) / `Beli Kredit` (ID)
+- Link bawah (hardcoded):
+  - EN: `Already purchased? Restore Pro`
+  - ID: `Sudah pernah beli? Pulihkan Pro`
+- Footer kecil (hardcoded): `Powered by LemonSqueezy`
+
+**Modal pembayaran 2: Payment Confirmation**
+- Judul: `Confirm Purchase` / `Konfirmasi Pembelian`
+- Deskripsi: `Are you sure you want to purchase 100 credits for $9.99?` / `Apakah Anda yakin ingin membeli 100 kredit seharga $9.99?`
+- Label field (hardcoded): `Email`
+- Placeholder email: `your@email.com` / `email@anda.com`
+- Status loading (hardcoded):
+  - EN: `Creating checkout, please wait...`
+  - ID: `Membuat checkout, mohon tunggu...`
+- Tombol: `Cancel`/`Batal`, `Confirm`/`Konfirmasi`
+- Validasi error (muncul sebagai toast):
+  - EN: `Email required`
+  - ID: `Email wajib diisi`
+- Saat proses redirect (hardcoded di tombol):
+  - EN: `Redirecting...`
+  - ID: `Mengalihkan...`
+
+**Overlay global saat checkout (loading)**
+- EN: `Redirecting to LemonSqueezy…`, `Please wait a moment.`
+- ID: `Mengalihkan ke LemonSqueezy…`, `Mohon tunggu sebentar.`
+
+Kalau yang kamu maksud “landing page” hanya state `idle` (tanpa state result/progress/toast), bilang ya—nanti aku rapikan jadi versi yang benar-benar hanya teks yang tampil di keadaan awal saja.

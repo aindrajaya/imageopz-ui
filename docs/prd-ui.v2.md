@@ -2,9 +2,10 @@ Untuk menjawab pertanyaan pertama Anda: **Ya, penanganan *user* berbayar sudah d
 
 Berdasarkan konsep *lite stack* yang kita susun sebelumnya, berikut adalah cara sistem menangani pengguna yang sudah membayar:
 1. **Titik Pemicu (Trigger):** Pengguna menghabiskan 3 kredit gratis di *Local Storage*. Frontend memunculkan *Popup Paywall* yang memblokir proses unggah dan menawarkan paket "Pro".
-2. **Transaksi:** Saat pengguna mengeklik "Beli", *overlay* LemonSqueezy muncul. Proses pembayaran terjadi di atas halaman tanpa perlu memuat ulang (*redirect*).
-3. **Validasi (Webhook & Backend):** Setelah pembayaran sukses, LemonSqueezy mengirimkan *webhook* ke backend (FastAPI di Vultr). Backend akan mencatat alamat IP/ID Sesi tersebut ke SQLite, mengubah status `is_paid = true`, dan memperpanjang `expiry_date` file menjadi 40 hari.
-4. **Respon Frontend:** Komponen LemonSqueezy di antarmuka menerima *callback* sukses. Frontend kemudian memperbarui *Local Storage* (atau menanamkan *cookie* aman) yang menandakan pengguna ini adalah "Pro". UI seketika berubah: batas unggah massal (*bulk upload*) yang tadinya 3 gambar kini terbuka menjadi 30 gambar.
+2. **Transaksi (Server-side Checkout):** Saat pengguna mengeklik "Upgrade", frontend meminta backend membuat checkout LemonSqueezy lewat `POST /api/v1/checkout/lemonsqueezy` (body JSON `{"email":"..."}` + header `X-Session-Id`). Backend mengembalikan `checkout_url`, lalu frontend melakukan redirect.
+3. **Validasi (Webhook & Backend):** Setelah pembayaran sukses, LemonSqueezy mengirimkan webhook ke backend `POST /api/v1/webhooks/lemonsqueezy`. Backend memetakan pembayaran ke row `users_quota` dan mengaktifkan Pro untuk `session_id` terkait.
+4. **Status Pro & Kredit (Authoritative dari Backend):** Frontend tidak “mengira-ngira” status Pro. Frontend selalu membaca status sesi dari `GET /api/v1/session/me` (server-side source of truth), termasuk `is_pro`, `pro_verified`, `needs_restore`, dan kredit yang tersisa.
+5. **Restore & Logout:** Jika user berpindah device/browser atau storage terhapus, frontend menyediakan *Restore Pro* (`POST /api/v1/session/restore`). Frontend juga menyediakan *Logout* (`POST /api/v1/session/logout`) untuk reset sesi secara server-side (clear cookie + rotate session id).
 
 ---
 
@@ -15,8 +16,8 @@ Berikut adalah pembaruan **PRD Frontend (UI)** yang telah diintegrasikan dengan 
 ## 1. Arsitektur & Teknologi Frontend
 Lapisan antarmuka dibangun dengan fokus pada eksekusi klien yang sangat cepat dan interaktif, menargetkan *First Contentful Paint* (FCP) di bawah 1.0 detik.
 
-*   **Framework:** **Next.js** (App Router).
-*   **Hosting:** **Vercel** (`imageopz.aindrajaya.my.id`).
+*   **Framework:** **React + Vite**.
+*   **Hosting:** Static hosting / CDN (atau Vercel/Netlify) yang mampu melayani SPA cepat.
 *   **Sistem Multi-Bahasa (Bilingual):** Dukungan *i18n* untuk Bahasa Inggris (EN) dan Indonesia (ID). Deteksi otomatis berdasarkan referensi IP atau pengaturan bahasa *browser*.
 *   **Styling & Animasi:** **Tailwind CSS** (UI) dan *library* animasi ringan (untuk *Confetti* dan transisi *Progress Bar*).
 *   **API Browser:** Mengandalkan **Blob** dan **File HTML5 API** untuk penanganan gambar di sisi klien sebelum dikirim ke server.
@@ -35,8 +36,8 @@ Lapisan antarmuka dibangun dengan fokus pada eksekusi klien yang sangat cepat da
     *   **User Pro:** Diizinkan memasukkan hingga 30 gambar sekaligus.
 
 ### Layar 2: *Processing State* & Simulasi
-*   **Animasi Proses:** Saat gambar diunggah ke Vultr, tampilkan *progress bar* yang bergerak mulus.
-*   **Antrean:** Jika antrean server padat, munculkan form input email transparan agar pengguna bisa meninggalkan halaman dan menerima hasil via email.
+*   **Animasi Proses:** Setelah `POST /api/v1/optimize` (multipart), frontend melakukan polling `GET /api/v1/status/{job_id}` sampai status `done/failed`, sambil menampilkan progress (`progress`/`progress_status`) bila tersedia.
+*   **Error Handling:** Jika backend mengembalikan `429 Too Many Requests` pada optimize (free-tier exhausted/rate limit), frontend meng-set “credits remaining” menjadi `0` agar UI memblokir request berikutnya dan menampilkan paywall.
 
 ### Layar 3: *Result & The "Wow Effect"*
 *   **Statistik Penghematan:** Tampilkan penghematan rasio byte dengan teks tebal (contoh: *Menghemat ruang hingga 80%*).
@@ -46,9 +47,30 @@ Lapisan antarmuka dibangun dengan fokus pada eksekusi klien yang sangat cepat da
 ## 3. Manajemen Kuota, Monetisasi, & Interaksi
 
 ### 3.1. Dinding Pembayaran (Paywall & LemonSqueezy)
-*   **Pelacakan Sesi:** Setiap pengunjung tanpa akun diberikan 3 kredit gratis yang disimpan di *Local Storage*.
-*   **Popup Paywall:** Muncul otomatis saat kredit habis. Menawarkan paket **Pro** (Beli Putus atau Langganan) yang membuka batas ukuran menjadi 50MB dan *bulk upload* hingga 30 gambar.
-*   **Integrasi:** Menggunakan LemonSqueezy *overlay* agar pengguna tidak berpindah halaman saat bertransaksi.
+*   **Pelacakan Sesi:** Frontend membuat `session_id` stabil (UUIDv4) dan mengirimkannya via header `X-Session-Id` pada semua request penting. Backend juga dapat menyetel cookie sesi (double safety).
+*   **Popup Paywall:** Muncul saat kredit habis (`credits_remaining == 0` untuk free, atau `pro_credits_remaining == 0` untuk pro) dan mengarahkan user ke flow checkout.
+*   **Integrasi Checkout:** Frontend memanggil `POST /api/v1/checkout/lemonsqueezy` (server-side checkout) lalu redirect ke `checkout_url`. Untuk menghindari *blank interaction*, UI menampilkan overlay loading “Redirecting…” setelah modal tertutup sampai redirect terjadi.
+
+### 3.2. Status Sesi & Kredit (Wajib dari Backend)
+Frontend harus selalu melakukan sinkronisasi dari `GET /api/v1/session/me` karena endpoint ini adalah sumber kebenaran untuk:
+*   `is_pro`, `pro_verified`, `pro_source`, `needs_restore` (untuk gating UI Pro).
+*   `is_authenticated`, `supabase_user_id`, `email` (untuk auth magic link dan identitas user).
+*   Kredit free tier: `credits_remaining`, `free_tier_max_credits`, `credits_used`.
+*   Kredit pro tier: `pro_credits_remaining`, `pro_tier_max_credits`, `pro_credits_used`.
+
+Implikasi UX:
+*   Header menampilkan tombol **Upgrade to Pro** saat user belum Pro.
+*   Jika backend mendeteksi Pro tapi `needs_restore=true` (atau `pro_source=unknown`), frontend menampilkan CTA **Restore Pro** (email) agar Pro “terverifikasi” untuk browser ini.
+*   Jika Pro verified, header menampilkan pill `Pro (email)` dan tombol `Logout`. Jumlah sisa kredit ditampilkan terpisah (mis. label kecil di header), bukan menempel pada tombol Pro.
+
+### 3.3. Restore Pro & Logout
+*   **Restore Pro:** Frontend menyediakan modal “Restore Pro” yang memanggil `POST /api/v1/session/restore` dengan body `{"email":"..."}` + header `X-Session-Id`. Jika sukses, frontend refresh `GET /api/v1/session/me` agar UI Pro aktif.
+*   **Logout:** Frontend memanggil `POST /api/v1/session/logout` untuk clear cookie server-side dan rotate `session_id`. Setelah logout, UI kembali ke state free dan menampilkan tombol “Upgrade to Pro”.
+
+### 3.4. Auth (Supabase Magic Link)
+*   **Sign in:** Frontend menyediakan tombol `Sign in` di header (modal email). Flow: `supabase.auth.signInWithOtp({ email, options: { emailRedirectTo }})`.
+*   **Callback Route:** Setelah user klik magic link, SPA route `/auth/callback` menampilkan “Signing you in…”, lalu memanggil `GET /api/v1/session/me` dengan header `Authorization: Bearer <supabase_access_token>` + `X-Session-Id`, lalu redirect ke `/`.
+*   **Authorization Header:** Untuk endpoint yang mendukung, frontend menyertakan header `Authorization` jika user sedang login (minimal: `/session/me`, `/optimize`, `/checkout/lemonsqueezy`, `/session/restore`).
 
 ### 3.2. Formulir Umpan Balik & Viralitas
 *   **Feedback Form:** Sesuai taktik *indie maker* untuk menyerap respons pasar secepat mungkin[cite: 1], terdapat *popup* sederhana di pojok layar bagi pengguna untuk melaporkan masalah atau memberi masukan.
@@ -59,6 +81,8 @@ Lapisan antarmuka dibangun dengan fokus pada eksekusi klien yang sangat cepat da
 ## 4. Kebutuhan Non-Fungsional Utama
 *   **Performa FCP:** Waktu muat awal halaman harus **<1.0s** untuk menjaga skor Lighthouse dan memikat *web developer*.
 *   **Kompatibilitas:** Mendukung Chrome, Firefox, Safari, dan Edge versi modern yang mendukung fitur manipulasi *Blob* HTML5.
+*   **Konfigurasi API Base URL:** Frontend membaca `VITE_IMAGEOPZ_API_BASE_URL` untuk menentukan base URL backend (contoh local: `http://127.0.0.1:8000`). Pastikan backend mengaktifkan CORS (khususnya `allow_credentials=true` dan allow header `X-Session-Id`) jika frontend dan backend beda origin.
+*   **Observabilitas Flow:** Saat testing local, pastikan terlihat urutan request: `GET /api/v1/session/me` → `POST /api/v1/optimize` → polling `GET /api/v1/status/{job_id}` → `GET /api/v1/session/me` (refresh credits). Untuk checkout: `POST /api/v1/checkout/lemonsqueezy` → redirect ke `checkout_url`.
 
 ---
 
