@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { getSessionMe, restoreProSession, ImageOpzApiError } from "@/lib/imageopzApi";
 import { supabase } from "@/lib/supabaseClient";
+import posthog from 'posthog-js';
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -125,12 +126,24 @@ export function AuthCallback() {
               localStorage.removeItem("imageopz_force_restore");
               localStorage.removeItem("imageopz_hide_restore_cta");
             } catch {}
+            posthog.capture('pro_session_restored', {
+              email: me.email,
+              pro_source: me.pro_source,
+            });
           }
           navigate(`/?restore=${proOk ? "ok" : "not_pro"}`, { replace: true });
           return;
         }
 
-        if (tokenToUse) await getSessionMe({ sessionId, accessToken: tokenToUse });
+        if (tokenToUse) {
+          const session = await supabase.auth.getSession();
+          const userEmail = session.data.session?.user?.email;
+          if (userEmail) {
+            posthog.identify(userEmail, { email: userEmail });
+          }
+          posthog.capture('user_signed_in');
+          await getSessionMe({ sessionId, accessToken: tokenToUse });
+        }
       } catch {
         // best effort
       } finally {

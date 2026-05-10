@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase, supabaseEnabled } from "@/lib/supabaseClient";
+import posthog from 'posthog-js';
 
 type AuthContextValue = {
   loadingAuth: boolean;
@@ -57,11 +58,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
     });
     if (error) throw error;
+    posthog.capture('magic_link_requested', { email });
   }, []);
 
   const signOut = useCallback(async () => {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
+    posthog.capture('user_signed_out');
+    posthog.reset();
   }, []);
 
   const value = useMemo<AuthContextValue>(() => {

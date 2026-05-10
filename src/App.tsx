@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "motion/react";
 import { Analytics } from "@vercel/analytics/react";
+import { usePostHog } from '@posthog/react';
 import { 
   UploadCloud, 
   Zap, 
@@ -207,6 +208,7 @@ const translations = {
 function AppContent({ lang }: { lang: "en" | "id" }) {
   const t = translations[lang];
   const navigate = useNavigate();
+  const posthog = usePostHog();
   const { accessToken, email: authEmail, signInWithMagicLink, signOut, loadingAuth } = useAuth();
   const MAGIC_LINK_COOLDOWN_MS = 120_000;
 
@@ -544,7 +546,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     const urls = validFiles.map(f => URL.createObjectURL(f));
     setPreviewUrls(urls);
     setAppState("preview");
-  }, [quota, lang, isPro]);
+    posthog?.capture('images_uploaded', {
+      file_count: validFiles.length,
+      total_size_bytes: validFiles.reduce((acc, f) => acc + f.size, 0),
+      is_pro: isPro,
+    });
+  }, [quota, lang, isPro, posthog]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -668,6 +675,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         // ignore
       }
       const queued = await optimizeImages({ images: files, sessionId, accessToken: accountClaimed ? accessToken : null });
+      posthog?.capture('optimization_started', {
+        file_count: files.length,
+        total_size_bytes: files.reduce((acc, f) => acc + f.size, 0),
+        is_pro: isPro,
+      });
       const order = queued.results.map(r => r.job_id);
       setJobOrder(order);
       pendingJobIdsRef.current = new Set(order);
@@ -760,6 +772,14 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             setQuota(Math.max(0, remaining));
           } catch {}
           setAppState("result");
+          const doneCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "done").length;
+          const failedCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "failed").length;
+          posthog?.capture('optimization_completed', {
+            file_count: order.length,
+            done_count: doneCount,
+            failed_count: failedCount,
+            is_pro: isPro,
+          });
           if (statuses.some(s => s.status === "done")) fireConfetti();
           return;
         }
@@ -799,6 +819,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     } catch (err) {
       stopPolling();
       setAppState("preview");
+      posthog?.capture('optimization_failed', {
+        error_message: err instanceof Error ? err.message : String(err),
+        error_status: err instanceof ImageOpzApiError ? err.status : null,
+        is_pro: isPro,
+      });
       if (err instanceof ImageOpzApiError) {
         // If backend rate-limits/quota-limits, reflect that locally so UI blocks further requests.
         if (!isPro && err.status === 429) {
@@ -898,8 +923,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   };
 
   const handleDownloadUrl = useCallback((url: string) => {
+    posthog?.capture('image_downloaded', { is_pro: isPro });
     window.open(url, "_blank", "noopener,noreferrer");
-  }, []);
+  }, [posthog, isPro]);
 
   const handleLogout = useCallback(() => {
     // Best-effort "logout": clear local identity markers, clear session cookie, and rotate session id.
@@ -1000,20 +1026,16 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       <Toaster position="top-center" />
 
       {/* Header */}
-      <header className="border-b border-border bg-background sticky top-0 z-50 py-2">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-           <div className="flex items-center gap-2">
-             <img
-               src="/logo.png"
-               alt="ImageOpz"
-               className="h-18 w-auto object-contain"
-             />
-           </div>
-          <div className="flex flex-wrap sm:flex-nowrap items-center gap-4">
-            <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
-              <Zap className="w-4 h-4 text-accent fill-accent/20" />
-              {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
-            </span>
+      <header className="border-b border-border bg-background sticky top-0 z-50">
+        <div className="container mx-auto min-h-16 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <img src="/logo.png" alt="ImageOpz" className="h-9 sm:h-10 w-auto object-contain" />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
+               <Zap className="w-4 h-4 text-accent fill-accent/20" />
+               {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
+             </span>
 
             {/* Pro / Purchase controls */}
             {isPro ? (
@@ -1079,7 +1101,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 )}
               </div>
             )}
-            <div className="flex gap-2">
+            <div className="flex gap-2 shrink-0">
               <button 
                 onClick={() => navigate('/')} 
                 className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
@@ -1422,16 +1444,25 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       </main>
 
       {/* Footer */}
-      <footer className="w-full bg-secondary/30 border-t border-border px-6 py-8">
+      <footer className="w-full bg-secondary/30 border-t border-border py-8">
         <div className="container mx-auto max-w-5xl flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-muted-foreground">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 text-center md:text-left">
             <img src="/favicon.png" alt="ImageOpz" className="h-10 w-auto object-contain" />
-            <span className="ml-2">{t.footerRights}</span>
+            <span className="ml-2 break-words">{t.footerRights}</span>
           </div>
-          <div className="flex gap-6 font-medium">
-            <button onClick={() => setShowFeedback(true)} className="hover:text-primary transition-colors">{t.footerContact}</button>
-            <a href="#" className="hover:text-primary transition-colors">{t.footerTerms}</a>
-            <a href="#" className="hover:text-primary transition-colors">{t.footerPrivacy}</a>
+          <div className="flex flex-wrap justify-center md:justify-end gap-x-6 gap-y-2 font-medium">
+            <button
+              onClick={() => setShowFeedback(true)}
+              className="hover:text-primary transition-colors whitespace-nowrap"
+            >
+              {t.footerContact}
+            </button>
+            <a href="#" className="hover:text-primary transition-colors whitespace-nowrap">
+              {t.footerTerms}
+            </a>
+            <a href="#" className="hover:text-primary transition-colors whitespace-nowrap">
+              {t.footerPrivacy}
+            </a>
           </div>
         </div>
       </footer>
@@ -1640,6 +1671,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     sessionId,
                     accessToken: accountClaimed ? accessToken : null,
                   });
+                  posthog?.capture('checkout_initiated', { email, provider: checkout.provider ?? 'lemonsqueezy' });
                   localStorage.setItem("imageopz_checkout_intent", "true");
                   localStorage.setItem("imageopz_email", email);
                   setAccountEmail(email);
