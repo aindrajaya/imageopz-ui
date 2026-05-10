@@ -14,7 +14,9 @@ import {
   AlertCircle,
   CreditCard,
   FileArchive,
-  ArrowRight
+  ArrowRight,
+  Menu,
+  X
 } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
@@ -261,6 +263,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
   const [showFeedback, setShowFeedback] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const pollStartedAtRef = useRef<number | null>(null);
   const lastProgressSigRef = useRef<string>("");
@@ -301,6 +304,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   useEffect(() => {
     jobStatusesRef.current = jobStatuses;
   }, [jobStatuses]);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [lang]);
 
   const applySessionMe = useCallback((me: SessionMeResponse) => {
     const authed = Boolean(me.is_authenticated);
@@ -1027,15 +1034,28 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
       {/* Header */}
       <header className="border-b border-border bg-background sticky top-0 z-50">
-        <div className="container mx-auto min-h-16 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <img src="/logo.png" alt="ImageOpz" className="h-9 sm:h-10 w-auto object-contain" />
+        <div className="container mx-auto min-h-16 py-3 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <img src="/logo.png" alt="ImageOpz" className="h-9 sm:h-10 w-auto object-contain" />
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              className="sm:hidden inline-flex items-center justify-center h-10 w-10 rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors"
+              aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={mobileMenuOpen}
+            >
+              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            </button>
           </div>
-          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
-               <Zap className="w-4 h-4 text-accent fill-accent/20" />
-               {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
-             </span>
+
+          {/* Desktop controls */}
+          <div className="hidden sm:flex flex-wrap items-center justify-end gap-3 sm:gap-4">
+            <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
+              <Zap className="w-4 h-4 text-accent fill-accent/20" />
+              {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
+            </span>
 
             {/* Pro / Purchase controls */}
             {isPro ? (
@@ -1112,6 +1132,115 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               >ID</button>
             </div>
           </div>
+
+          {/* Mobile menu */}
+          {mobileMenuOpen && (
+            <div className="sm:hidden w-full rounded-xl border border-border bg-background shadow-sm p-3">
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5 font-medium opacity-80">
+                  <Zap className="w-4 h-4 text-accent fill-accent/20" />
+                  {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      navigate('/');
+                    }}
+                    className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
+                  >
+                    EN
+                  </button>
+                  <button
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      navigate('/id');
+                    }}
+                    className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'id' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
+                  >
+                    ID
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-col gap-2">
+                {isPro ? (
+                  <>
+                    <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 w-full truncate">
+                      {isAuthenticated && accountEmail ? `Pro (${accountEmail})` : "Pro"}
+                    </div>
+                    {!isAuthenticated && !loadingAuth && !accountClaimed && (
+                      <button
+                        className="px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors text-left"
+                        onClick={() => {
+                          setMobileMenuOpen(false);
+                          setSignInPurpose("restore");
+                          setShowSignIn(true);
+                        }}
+                        type="button"
+                      >
+                        Claim Pro
+                      </button>
+                    )}
+                    <button
+                      className="px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors text-left"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        handleLogout();
+                      }}
+                      disabled={isLoggingOut}
+                      type="button"
+                    >
+                      {isLoggingOut ? "Logging out..." : "Logout"}
+                    </button>
+                    {quota <= 0 && (
+                      <button
+                        className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                        onClick={() => {
+                          setMobileMenuOpen(false);
+                          setShowPaywall(true);
+                        }}
+                        type="button"
+                      >
+                        Add credits
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      className="px-5 py-2 text-sm font-semibold text-primary-foreground bg-primary rounded-full hover:bg-primary/90 transition-colors"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        if (!hideRestoreCta && needsRestore) {
+                          setSignInPurpose("restore");
+                          setShowSignIn(true);
+                          return;
+                        }
+                        else setShowPaywall(true);
+                      }}
+                      type="button"
+                    >
+                      {hideRestoreCta ? "Upgrade to Pro" : needsRestore ? "Restore Pro" : "Upgrade to Pro"}
+                    </button>
+                    {accountClaimed && (
+                      <button
+                        className="px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors text-left"
+                        onClick={() => {
+                          setMobileMenuOpen(false);
+                          handleLogout();
+                        }}
+                        disabled={isLoggingOut}
+                        type="button"
+                      >
+                        {isLoggingOut ? "Logging out..." : "Logout"}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
