@@ -1034,7 +1034,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
       {/* Header */}
       <header className="border-b border-border bg-background sticky top-0 z-50">
-        <div className="container mx-auto min-h-16 py-3 flex flex-col gap-3">
+        <div className="container mx-auto min-h-16 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               <img src="/logo.png" alt="ImageOpz" className="h-9 sm:h-10 w-auto object-contain" />
@@ -1051,7 +1051,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           </div>
 
           {/* Desktop controls */}
-          <div className="hidden sm:flex flex-wrap items-center justify-end gap-3 sm:gap-4">
+          <div className="hidden sm:flex flex-wrap items-center gap-3 sm:gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
               {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
