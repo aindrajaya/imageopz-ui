@@ -9,6 +9,19 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function getSupabaseAccessTokenWithRetry(opts?: { maxWaitMs?: number; intervalMs?: number }) {
+  const maxWaitMs = typeof opts?.maxWaitMs === "number" ? opts.maxWaitMs : 2_000;
+  const intervalMs = typeof opts?.intervalMs === "number" ? opts.intervalMs : 100;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= maxWaitMs) {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token ?? null;
+    if (token) return token;
+    await sleep(intervalMs);
+  }
+  return (await supabase.auth.getSession()).data.session?.access_token ?? null;
+}
+
 export function AuthCallback() {
   const navigate = useNavigate();
   const { accessToken } = useAuth();
@@ -20,6 +33,12 @@ export function AuthCallback() {
     ranOnceRef.current = true;
 
     (async () => {
+      let didNavigate = false;
+      const safeNavigate = (to: string) => {
+        if (didNavigate) return;
+        didNavigate = true;
+        navigate(to, { replace: true });
+      };
       try {
         // Be defensive: ensure Supabase session is established from URL (hash/code) before proceeding.
         // Some browsers may not trigger `detectSessionInUrl` fast enough.
@@ -40,7 +59,7 @@ export function AuthCallback() {
           // ignore
         }
 
-        const tokenToUse = accessToken ?? (await supabase.auth.getSession()).data.session?.access_token ?? null;
+        const tokenToUse = accessToken ?? (await getSupabaseAccessTokenWithRetry()) ?? null;
         let sessionId = localStorage.getItem("imageopz_session_id");
         if (!sessionId) {
           const id =
@@ -62,7 +81,7 @@ export function AuthCallback() {
             try {
               localStorage.removeItem("imageopz_account_claimed");
             } catch {}
-            navigate("/?restore=not_pro", { replace: true });
+            safeNavigate("/?restore=not_pro");
             return;
           }
 
@@ -82,15 +101,15 @@ export function AuthCallback() {
                 await sleep(Math.min(10_000, Math.max(300, retryAfter)));
                 continue;
               }
-              try {
-                localStorage.removeItem("imageopz_account_claimed");
-              } catch {}
-              navigate("/?restore=not_pro", { replace: true });
-              return;
-            }
-          }
+               try {
+                 localStorage.removeItem("imageopz_account_claimed");
+               } catch {}
+               safeNavigate("/?restore=not_pro");
+               return;
+             }
+           }
 
-          let me: Awaited<ReturnType<typeof getSessionMe>> | null = null;
+           let me: Awaited<ReturnType<typeof getSessionMe>> | null = null;
           for (let attempt = 0; attempt < 4; attempt++) {
             try {
               me = await getSessionMe({ sessionId, accessToken: tokenToUse });
@@ -111,15 +130,15 @@ export function AuthCallback() {
             }
           }
 
-          if (!me) {
-            try {
-              localStorage.removeItem("imageopz_account_claimed");
-            } catch {}
-            navigate("/?restore=not_pro", { replace: true });
-            return;
-          }
-          const proOk = Boolean(me.is_pro && me.pro_verified && !me.needs_restore);
-          if (proOk) {
+           if (!me) {
+             try {
+               localStorage.removeItem("imageopz_account_claimed");
+             } catch {}
+             safeNavigate("/?restore=not_pro");
+             return;
+           }
+           const proOk = Boolean(me.is_pro && me.pro_verified && !me.needs_restore);
+           if (proOk) {
             localStorage.setItem("imageopz_account_claimed", "true");
             // Restore succeeded: clear "force restore" UI flags so Pro becomes active immediately.
             try {
@@ -128,28 +147,29 @@ export function AuthCallback() {
             } catch {}
             posthog.capture('pro_session_restored', {
               email: me.email,
-              pro_source: me.pro_source,
-            });
-          }
-          navigate(`/?restore=${proOk ? "ok" : "not_pro"}`, { replace: true });
-          return;
-        }
+               pro_source: me.pro_source,
+             });
+           }
+           safeNavigate(`/?restore=${proOk ? "ok" : "not_pro"}`);
+           return;
+         }
 
-        if (tokenToUse) {
-          const session = await supabase.auth.getSession();
+         if (tokenToUse) {
+           const session = await supabase.auth.getSession();
           const userEmail = session.data.session?.user?.email;
           if (userEmail) {
             posthog.identify(userEmail, { email: userEmail });
           }
-          posthog.capture('user_signed_in');
-          await getSessionMe({ sessionId, accessToken: tokenToUse });
-        }
-      } catch {
-        // best effort
-      } finally {
-        navigate("/", { replace: true });
-      }
-    })();
+           posthog.capture('user_signed_in');
+           await getSessionMe({ sessionId, accessToken: tokenToUse });
+         }
+
+         safeNavigate("/");
+       } catch {
+         // best effort
+         safeNavigate("/");
+       }
+     })();
   }, [accessToken, navigate]);
 
   return (

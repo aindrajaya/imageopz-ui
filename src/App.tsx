@@ -222,6 +222,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [needsRestore, setNeedsRestore] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [sessionMeLoading, setSessionMeLoading] = useState(true);
+  const [sessionMeLoaded, setSessionMeLoaded] = useState(false);
+  const [sessionMeError, setSessionMeError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>(() => {
     try {
       const existing = localStorage.getItem("imageopz_session_id");
@@ -279,6 +281,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const lastSessionMeAtRef = useRef(0);
   const lastSessionMeRef = useRef<SessionMeResponse | null>(null);
   const idleMeTimerRef = useRef<number | null>(null);
+  const prevAccessTokenRef = useRef<string | null>(null);
 
   const MAX_STATUS_CHECKS_PER_TICK = 6;
   const MAX_STATUS_CONCURRENCY = 4;
@@ -346,7 +349,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     if (!force && sessionMeInFlightRef.current) return await sessionMeInFlightRef.current;
 
-    const tokenToUse = typeof params?.accessTokenOverride === "string" ? params.accessTokenOverride : (accountClaimed ? accessToken : null);
+    // If we have a Supabase access token, always send it so backend can immediately verify session/email/Pro.
+    // Relying on `accountClaimed` here can cause a guest fallback during the initial post-magic-link bootstrap.
+    const tokenToUse =
+      typeof params?.accessTokenOverride === "string"
+        ? params.accessTokenOverride
+        : accessToken;
     const p = (async () => {
       if (import.meta.env.DEV) {
         const g = globalThis as any;
@@ -363,6 +371,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       lastSessionMeAtRef.current = Date.now();
       lastSessionMeRef.current = me;
       applySessionMe(me);
+      setSessionMeLoaded(true);
+      setSessionMeError(null);
       return me;
     })();
 
@@ -372,7 +382,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     } finally {
       if (sessionMeInFlightRef.current === p) sessionMeInFlightRef.current = null;
     }
-  }, [sessionId, accountClaimed, accessToken, applySessionMe]);
+  }, [sessionId, accessToken, applySessionMe]);
 
   // Load local non-authoritative hints on mount
   useEffect(() => {
@@ -385,6 +395,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     setAccountClaimed(localStorage.getItem("imageopz_account_claimed") === "true");
   }, []);
+
+  useEffect(() => {
+    const prev = prevAccessTokenRef.current;
+    // When the Supabase session first appears (post-magic-link) or disappears (logout),
+    // force a fresh backend verification cycle without flashing guest UI.
+    if ((!prev && accessToken) || (prev && !accessToken)) {
+      setSessionMeLoaded(false);
+      setSessionMeError(null);
+      setSessionMeLoading(true);
+    }
+    prevAccessTokenRef.current = accessToken;
+  }, [accessToken]);
 
   useEffect(() => {
     if (!showSignIn) {
@@ -412,17 +434,27 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
   // Sync session state from backend (authoritative for pro + remaining credits)
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         if (!sessionId) return;
-        await refreshSessionMe({ force: sessionMeLoading });
+        setSessionMeLoading(true);
+        await refreshSessionMe({
+          force: true,
+          reason: accessToken ? "bootstrap_auth" : "bootstrap_guest",
+        });
       } catch {
         // Best effort: keep local state if backend unavailable.
+        if (!cancelled) setSessionMeError("Failed to verify account. Please retry.");
       } finally {
-        setSessionMeLoading(false);
+        if (!cancelled) setSessionMeLoading(false);
       }
     })();
-  }, [sessionId, refreshSessionMe, sessionMeLoading]);
+    return () => {
+      // Prevent late state updates during route changes/unmount.
+      cancelled = true;
+    };
+  }, [sessionId, accessToken, refreshSessionMe]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -964,6 +996,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       setForceRestore(true);
       setHideRestoreCta(true);
       setQuota(3);
+      setSessionMeLoaded(false);
+      setSessionMeError(null);
+      setSessionMeLoading(true);
       toast.success("Logged out");
       setIsLoggingOut(false);
     })();
@@ -1028,6 +1063,23 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     })();
   }, [startActivationBridge, refreshSessionMe, sessionId, accessToken, accountClaimed, forceRestore]);
 
+  const accountVerifying = (loadingAuth || Boolean(accessToken)) && !sessionMeLoaded;
+  const quotaLabel = sessionMeLoading || accountVerifying ? "—" : String(quota);
+
+  const retryVerifyAccount = useCallback(() => {
+    (async () => {
+      try {
+        setSessionMeError(null);
+        setSessionMeLoading(true);
+        await refreshSessionMe({ force: true, reason: "retry_verify" });
+      } catch {
+        setSessionMeError("Failed to verify account. Please retry.");
+      } finally {
+        setSessionMeLoading(false);
+      }
+    })();
+  }, [refreshSessionMe]);
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans selection:bg-foreground selection:text-background">
       <Toaster position="top-center" />
@@ -1054,11 +1106,34 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           <div className="hidden sm:flex flex-wrap items-center gap-3 sm:gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
-              {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
+              {quotaLabel} {t.optimizationsLeft}
             </span>
 
             {/* Pro / Purchase controls */}
-            {isPro ? (
+            {accountVerifying ? (
+              <div className="flex items-center gap-2">
+                <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 animate-pulse">
+                  {lang === "en" ? "Verifying account…" : "Memverifikasi akun…"}
+                </div>
+                {sessionMeError && (
+                  <button
+                    className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={retryVerifyAccount}
+                    type="button"
+                  >
+                    {lang === "en" ? "Retry" : "Coba lagi"}
+                  </button>
+                )}
+                <button
+                  className="px-3 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={handleLogout}
+                  disabled={isLoggingOut}
+                  type="button"
+                >
+                  {isLoggingOut ? "Logging out..." : "Logout"}
+                </button>
+              </div>
+            ) : isPro ? (
               <div className="flex items-center gap-2">
                 <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 max-w-[220px] truncate">
                   {isAuthenticated && accountEmail ? `Pro (${accountEmail})` : "Pro"}
@@ -1134,17 +1209,17 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           </div>
 
           {/* Mobile menu */}
-          {mobileMenuOpen && (
-            <div className="sm:hidden w-full rounded-xl border border-border bg-background shadow-sm p-3">
-              <div className="flex items-center justify-between text-sm text-muted-foreground">
-                <span className="inline-flex items-center gap-1.5 font-medium opacity-80">
-                  <Zap className="w-4 h-4 text-accent fill-accent/20" />
-                  {sessionMeLoading ? "—" : quota} {t.optimizationsLeft}
-                </span>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      setMobileMenuOpen(false);
+            {mobileMenuOpen && (
+              <div className="sm:hidden w-full rounded-xl border border-border bg-background shadow-sm p-3">
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 font-medium opacity-80">
+                    <Zap className="w-4 h-4 text-accent fill-accent/20" />
+                    {quotaLabel} {t.optimizationsLeft}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setMobileMenuOpen(false);
                       navigate('/');
                     }}
                     className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
@@ -1164,7 +1239,36 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
               </div>
 
               <div className="mt-3 flex flex-col gap-2">
-                {isPro ? (
+                {accountVerifying ? (
+                  <>
+                    <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 w-full animate-pulse">
+                      {lang === "en" ? "Verifying account…" : "Memverifikasi akun…"}
+                    </div>
+                    {sessionMeError && (
+                      <button
+                        className="px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors text-left"
+                        onClick={() => {
+                          setMobileMenuOpen(false);
+                          retryVerifyAccount();
+                        }}
+                        type="button"
+                      >
+                        {lang === "en" ? "Retry verification" : "Coba verifikasi lagi"}
+                      </button>
+                    )}
+                    <button
+                      className="px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors text-left"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        handleLogout();
+                      }}
+                      disabled={isLoggingOut}
+                      type="button"
+                    >
+                      {isLoggingOut ? "Logging out..." : "Logout"}
+                    </button>
+                  </>
+                ) : isPro ? (
                   <>
                     <div className="px-4 py-2 text-sm font-semibold bg-secondary text-foreground rounded-full border border-border/60 w-full truncate">
                       {isAuthenticated && accountEmail ? `Pro (${accountEmail})` : "Pro"}
@@ -1598,7 +1702,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
       {/* Paywall Modal */}
       <Dialog open={showPaywall} onOpenChange={setShowPaywall}>
-        <DialogContent className="max-w-md p-0 overflow-hidden border-none bg-transparent shadow-2xl">
+        <DialogContent className="p-0 overflow-hidden border-none bg-transparent shadow-2xl sm:max-w-md">
           <Card className="w-full border-none rounded-xl">
             <div className="bg-foreground px-6 py-10 text-background text-center relative overflow-hidden">
                <div className="absolute inset-0 opacity-10 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent" />
