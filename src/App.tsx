@@ -342,7 +342,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     }
 
     // If we already have real progress, keep the normal % display.
-    if (progress > 0 || jobOrder.length > 0) {
+    if (progress > 0) {
       setWarmupPct(null);
       if (warmupTimerRef.current !== null) {
         window.clearInterval(warmupTimerRef.current);
@@ -359,7 +359,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
 
     warmupTimerRef.current = window.setInterval(() => {
-      const hasRealProgress = progress > 0 || jobOrder.length > 0;
+      const hasRealProgress = progress > 0;
       if (hasRealProgress) {
         if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
         warmupTimerRef.current = null;
@@ -1621,7 +1621,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="font-mono text-sm font-medium">
-                      {warmupPct !== null ? `${warmupPct}%` : `${Math.round(progress)}%`}
+                      {`${Math.max(jobOrder.length > 0 ? 1 : 0, warmupPct ?? 0, Math.round(progress))}%`}
                     </span>
                   </div>
                 </div>
