@@ -24,6 +24,7 @@ import confetti from "canvas-confetti";
 import { BrowserRouter, Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { AuthCallback } from "@/components/auth/AuthCallback";
+import { MyResultsPage } from "@/components/results/MyResults";
 import {
   optimizeImages,
   getJobStatus,
@@ -35,6 +36,7 @@ import {
   type JobStatusResponse,
   type SessionMeResponse,
 } from "@/lib/imageopzApi";
+import { saveResultBatch } from "@/lib/resultsStore";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -811,6 +813,32 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             setQuota(Math.max(0, remaining));
           } catch {}
           setAppState("result");
+          try {
+            const done = allKnown.filter((s) => s.status === "done" && typeof s.r2_url === "string" && s.r2_url);
+            if (done.length > 0) {
+              const createdAt = new Date().toISOString();
+              const expiryCandidates = done.map((s) => s.expiry_date).filter(Boolean).sort();
+              const expiresAt =
+                expiryCandidates[0] ||
+                new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+              saveResultBatch({
+                session_id: sessionId,
+                created_at: createdAt,
+                expires_at: expiresAt,
+                items: done.map((s) => ({
+                  job_id: s.job_id,
+                  filename: s.original_filename,
+                  url: s.r2_url as string,
+                  created_at: s.created_at,
+                  expiry_date: s.expiry_date,
+                  original_size: s.original_size,
+                  optimized_size: s.optimized_size ?? null,
+                })),
+              });
+            }
+          } catch {
+            // best effort
+          }
           const doneCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "done").length;
           const failedCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "failed").length;
           posthog?.capture('optimization_completed', {
@@ -1102,8 +1130,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
             </button>
           </div>
 
-          {/* Desktop controls */}
-          <div className="hidden sm:flex flex-wrap items-center gap-3 sm:gap-4">
+            {/* Desktop controls */}
+            <div className="hidden sm:flex flex-wrap items-center gap-3 sm:gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden md:inline-flex items-center gap-1.5 opacity-70">
               <Zap className="w-4 h-4 text-accent fill-accent/20" />
               {quotaLabel} {t.optimizationsLeft}
@@ -1196,11 +1224,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 )}
               </div>
             )}
-            <div className="flex gap-2 shrink-0">
-              <button 
-                onClick={() => navigate('/')} 
-                className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
-              >EN</button>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => navigate(lang === "id" ? "/id/my-results" : "/my-results")}
+                  className="text-xs font-bold px-2 py-1 rounded transition-colors text-muted-foreground hover:bg-secondary/50"
+                  type="button"
+                >
+                  {lang === "en" ? "Results" : "Hasil"}
+                </button>
+                <button 
+                  onClick={() => navigate('/')} 
+                  className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
+                >EN</button>
               <button 
                 onClick={() => navigate('/id')} 
                 className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'id' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
@@ -1220,7 +1255,17 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     <button
                       onClick={() => {
                         setMobileMenuOpen(false);
-                      navigate('/');
+                        navigate(lang === "id" ? "/id/my-results" : "/my-results");
+                      }}
+                      className="text-xs font-bold px-2 py-1 rounded transition-colors text-muted-foreground hover:bg-secondary/50"
+                      type="button"
+                    >
+                      {lang === "en" ? "Results" : "Hasil"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        navigate('/');
                     }}
                     className={`text-xs font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-secondary text-primary' : 'text-muted-foreground hover:bg-secondary/50'}`}
                   >
@@ -2055,6 +2100,8 @@ function GlobalRouter() {
     <Routes>
       <Route path="/" element={<AppContent lang="en" />} />
       <Route path="/id" element={<AppContent lang="id" />} />
+      <Route path="/my-results" element={<MyResultsPage lang="en" />} />
+      <Route path="/id/my-results" element={<MyResultsPage lang="id" />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="*" element={<AppContent lang="en" />} />
     </Routes>
