@@ -79,11 +79,11 @@ const translations = {
     crunching: "Crunching pixels...",
     applying: "Applying advanced WebP/AVIF compression.",
     progressStages: [
+      "Uploading image...",
       "Analyzing image...",
-      "Extracting features...",
-      "Applying compression...",
-      "Optimizing format...",
-      "Finalizing..."
+      "Generating optimized variants...",
+      "Optimizing WebP/AVIF output...",
+      "Finalizing result..."
     ],
     highTraffic: "High Traffic Alert",
     queuePos: "Queue",
@@ -120,7 +120,9 @@ const translations = {
     estimatedTime: "Estimated time",
     minuteShort: "minutes",
     connecting: "Wait a moment…",
-    processingHint: "💡 You can close this tab. Results will be saved to /my-results",
+    processingHint: "Please keep this tab open until optimization is complete.",
+    resultsSavedHint: "💡 You can close this tab now. Results are saved to /my-results",
+    safeToLeave: "Safe to close this tab",
     outOfCredits: "Out of Free Credits.",
     supportIndie: "Keep your websites blazing fast. Upgrade to optimize more images instantly.",
     proFeature1: "100 image optimizations",
@@ -159,11 +161,11 @@ const translations = {
     crunching: "Memproses gambar...",
     applying: "Melakukan kompresi super cepat ke format Next-Gen.",
     progressStages: [
+      "Mengunggah gambar...",
       "Menganalisis gambar...",
-      "Mengekstraksi fitur...",
-      "Menerapkan kompresi...",
-      "Mengoptimalkan format...",
-      "Menyelesaikan..."
+      "Membuat varian hasil optimasi...",
+      "Mengoptimalkan output WebP/AVIF...",
+      "Menyelesaikan hasil..."
     ],
     highTraffic: "Antrean sedang ramai",
     queuePos: "Posisi",
@@ -200,7 +202,9 @@ const translations = {
     estimatedTime: "Estimasi waktu",
     minuteShort: "menit",
     connecting: "Tunggu sebentar…",
-    processingHint: "💡 Anda boleh menutup tab ini. Hasil akan tersimpan di /my-results",
+    processingHint: "Mohon tetap buka tab ini sampai proses optimasi selesai.",
+    resultsSavedHint: "💡 Anda boleh menutup tab ini sekarang. Hasil tersimpan di /my-results",
+    safeToLeave: "Aman menutup tab ini",
     outOfCredits: "Kehabisan Kuota Gratis.",
     supportIndie: "Dukung alat indie kami dan dapatkan akses tak terbatas.",
     proFeature1: "100 Credits untuk Optimasi",
@@ -985,6 +989,19 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     return { statuses, totalOriginal, totalOptimized, anyOptimized, savingsPct };
   }, [jobOrder, jobStatuses]);
 
+  const hasDownloadableResults = useMemo(
+    () => aggregated.statuses.some((s) => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0),
+    [aggregated.statuses]
+  );
+
+  const processingFinished = useMemo(() => {
+    if (jobOrder.length === 0) return false;
+    return jobOrder.every((id) => {
+      const s = jobStatuses[id];
+      return s?.status === "done" || s?.status === "failed";
+    });
+  }, [jobOrder, jobStatuses]);
+
   const getProgressStage = () => {
     const statuses = jobOrder.map(id => jobStatuses[id]).filter(Boolean);
     const latest = statuses.find(s => s?.progress_status)?.progress_status;
@@ -1588,9 +1605,16 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   </AnimatePresence>
                 </div>
 
-                <div className="text-sm text-muted-foreground">
-                  {t.processingHint}
-                </div>
+                {processingFinished && hasDownloadableResults ? (
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/50 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                    <CheckCircle className="h-4 w-4" />
+                    {t.safeToLeave}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    {t.processingHint}
+                  </div>
+                )}
 
                 {activationPending && (
                   <div className="text-sm text-muted-foreground">
@@ -1636,6 +1660,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   <h2 className="text-4xl font-serif font-bold tracking-tight">
                     {t.massiveSavings.split('!')[0]} <span className="italic text-primary">!</span>
                   </h2>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/50 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                    <CheckCircle className="h-4 w-4" />
+                    {t.safeToLeave}
+                  </div>
+                  <p className="text-sm text-muted-foreground">{t.resultsSavedHint}</p>
                 </div>
 
                 {/* Metrics Grid */}
