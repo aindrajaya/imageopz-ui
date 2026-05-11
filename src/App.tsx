@@ -75,7 +75,7 @@ const translations = {
     socialProof: "Before vs After",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Image",
-    supportFormat: "Support for JPEG, PNG, WEBP up to 20MB per file.",
+    supportFormat: "Support for JPEG, PNG, WEBP up to 10MB (Free) / 25MB (Pro) per file.",
     crunching: "Crunching pixels...",
     applying: "Applying advanced WebP/AVIF compression.",
     progressStages: [
@@ -107,7 +107,7 @@ const translations = {
     howItWorks: "How it Works",
     howItWorksSub: "A brutally simple pipeline designed to solve one problem: bloated AI-generated images ruining your website's performance.",
     step1Title: "Drop & Validate",
-    step1Desc: "Client-side validation ensures you only send valid images. 10MB limit keeps our Edge network fast and responsive without arbitrary bloat.",
+    step1Desc: "Client-side validation ensures you only send valid images. 10MB (Free) / 25MB (Pro) limit keeps our Edge network fast and responsive without arbitrary bloat.",
     step2Title: "Edge Processing",
     step2Desc: "Next.js Edge functions validate and rate-limit, passing your image to our dedicated Vultr instance powered by highly tuned Python compression algorithms.",
     step3Title: "Deliver & Wipe",
@@ -154,7 +154,7 @@ const translations = {
     socialProof: "Sebelum vs Sesudah",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Gambar",
-    supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 20MB)",
+    supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 10MB Gratis / 25MB Pro)",
     crunching: "Memproses gambar...",
     applying: "Melakukan kompresi super cepat ke format Next-Gen.",
     progressStages: [
@@ -186,7 +186,7 @@ const translations = {
     howItWorks: "Cara Kerja",
     howItWorksSub: "Alur sederhana yang dirancang untuk mengatasi gambar AI berukuran raksasa yang memperlambat website Anda.",
     step1Title: "Validasi Loka",
-    step1Desc: "Validasi sisi klien memastikan hanya gambar valid yang diproses. Batas 10MB menjaga jaringan Edge tetap responsif.",
+    step1Desc: "Validasi sisi klien memastikan hanya gambar valid yang diproses. Batas 10MB (Gratis) / 25MB (Pro) menjaga jaringan Edge tetap responsif.",
     step2Title: "Pemrosesan Edge",
     step2Desc: "Fungsi Edge memvalidasi dan membatasi traffic, lalu mengirimkan gambar Anda ke engine kompresi cerdas kami.",
     step3Title: "Kirim & Hapus",
@@ -596,10 +596,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   // `isPro` is derived from backend `/api/v1/session/me`; don't persist as a local source of truth.
 
   const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
+    const maxMb = isPro ? 25 : 10;
     if (fileRejections.length > 0) {
       const rejection = fileRejections[0];
       if (rejection.errors[0]?.code === "file-too-large") {
-        const maxMb = isPro ? 50 : 10;
         toast.error(lang === "en" ? "File is too large" : "Ukuran file terlalu besar", { 
           description: lang === "en" ? `Maximum file size is ${maxMb}MB.` : `Maksimal ukuran file adalah ${maxMb}MB.`
         });
@@ -629,7 +629,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     const maxAllowed = isPro ? 30 : Math.min(3, quota);
 
-    const maxBytes = isPro ? 50 * 1024 * 1024 : 10 * 1024 * 1024;
+    const maxBytes = isPro ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
     let validFiles = acceptedFiles.filter(f => {
       const isValidType = ["image/jpeg", "image/png", "image/webp"].includes(f.type);
       const isValidSize = f.size <= maxBytes;
@@ -638,7 +638,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     if (validFiles.length < acceptedFiles.length) {
       toast.error(lang === "en" ? "Some files skipped" : "Beberapa file dilewati", {
-        description: lang === "en" ? "Invalid type or exceeding 10MB limit." : "Tipe tidak valid atau melebihi batas 10MB."
+        description: lang === "en"
+          ? `Invalid type or exceeding ${maxMb}MB limit.`
+          : `Tipe tidak valid atau melebihi batas ${maxMb}MB.`
       });
     }
 
@@ -667,7 +669,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { "image/jpeg": [], "image/png": [], "image/webp": [] } as any,
-    maxSize: (isPro ? 50 : 10) * 1024 * 1024,
+    maxSize: (isPro ? 25 : 10) * 1024 * 1024,
     maxFiles: isPro ? 30 : Math.min(3, Math.max(0, quota)),
     multiple: true
   } as any);
