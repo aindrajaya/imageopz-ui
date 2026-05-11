@@ -68,11 +68,11 @@ const translations = {
     optimizationsLeft: "optimizations left",
     upgradeToPro: "Upgrade to Pro",
     lcpKiller: "LCP-Killer Tool ⚡",
-    headlineMain: "Refine your visuals",
-    headlineSub: "in seconds.",
-    description: "Professional-grade AI image processing for creators. Simple, organic, and lightning fast.",
+    headlineMain: "Ship lighter images",
+    headlineSub: "fast.",
+    description: "80% smaller files, in a few clicks.",
     dropYourImage: "Drop your image here",
-    supportFormat: "Support for JPEG, PNG, WEBP up to 10MB per file.",
+    supportFormat: "Support for JPEG, PNG, WEBP up to 20MB per file.",
     crunching: "Crunching pixels...",
     applying: "Applying advanced WebP/AVIF compression.",
     progressStages: [
@@ -113,6 +113,10 @@ const translations = {
     imagePreview: "Image Preview",
     readyToOptimize: "Ready to optimize?",
     startOptimization: "Start Optimization",
+    imagesDetected: "images detected",
+    estimatedTime: "Estimated time",
+    minuteShort: "minutes",
+    processingHint: "💡 You can close this tab. Results will be saved to /my-results",
     outOfCredits: "Out of Free Credits.",
     supportIndie: "Keep your websites blazing fast. Upgrade to optimize more images instantly.",
     proFeature1: "100 image optimizations",
@@ -140,11 +144,11 @@ const translations = {
     optimizationsLeft: "optimasi tersisa",
     upgradeToPro: "Upgrade ke Pro",
     lcpKiller: "Alat LCP-Killer ⚡",
-    headlineMain: "Ubah Gambar AI Raksasa",
-    headlineSub: "Menjadi WebP/AVIF Super Cepat dalam Detik.",
-    description: "Solusi instan optimasi gambar untuk developer web. Kompresi otomatis tanpa membebani performa browser Anda.",
+    headlineMain: "Buat gambar lebih ringan",
+    headlineSub: "cepat.",
+    description: "Ukuran bisa turun hingga 80% dalam beberapa klik.",
     dropYourImage: "Jatuhkan gambar AI di sini",
-    supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 10MB)",
+    supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 20MB)",
     crunching: "Memproses gambar...",
     applying: "Melakukan kompresi super cepat ke format Next-Gen.",
     progressStages: [
@@ -185,6 +189,10 @@ const translations = {
     imagePreview: "Pratinjau Gambar",
     readyToOptimize: "Siap untuk optimasi?",
     startOptimization: "Mulai Optimasi",
+    imagesDetected: "gambar terdeteksi",
+    estimatedTime: "Estimasi waktu",
+    minuteShort: "menit",
+    processingHint: "💡 Anda boleh menutup tab ini. Hasil akan tersimpan di /my-results",
     outOfCredits: "Kehabisan Kuota Gratis.",
     supportIndie: "Dukung alat indie kami dan dapatkan akses tak terbatas.",
     proFeature1: "100 Credits untuk Optimasi",
@@ -263,6 +271,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [accountClaimed, setAccountClaimed] = useState(false);
   const [activationPending, setActivationPending] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [warmupStep, setWarmupStep] = useState<number | null>(null);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
@@ -275,6 +284,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const pendingJobIdsRef = useRef<Set<string>>(new Set<string>());
   const pollCursorRef = useRef(0);
   const pollBackoffMsRef = useRef(0);
+  const warmupTimerRef = useRef<number | null>(null);
   const activationTimerRef = useRef<number | null>(null);
   const activationStartedAtRef = useRef<number | null>(null);
   const startActivationBridgeRef = useRef<null | (() => void)>(null);
@@ -313,6 +323,59 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [lang]);
+
+  useEffect(() => {
+    if (appState !== "processing") {
+      setWarmupStep(null);
+      if (warmupTimerRef.current !== null) {
+        window.clearInterval(warmupTimerRef.current);
+        warmupTimerRef.current = null;
+      }
+      return;
+    }
+
+    // If we already have real progress, keep the normal % display.
+    if (progress > 0 || jobOrder.length > 0) {
+      setWarmupStep(null);
+      if (warmupTimerRef.current !== null) {
+        window.clearInterval(warmupTimerRef.current);
+        warmupTimerRef.current = null;
+      }
+      return;
+    }
+
+    // Warmup: show instant movement (1/7 → 6/7) so users don't see 0% at the start.
+    const TOTAL_STEPS = 7;
+    let tick = 0;
+
+    setWarmupStep(1);
+    if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
+
+    warmupTimerRef.current = window.setInterval(() => {
+      const hasRealProgress = progress > 0 || jobOrder.length > 0;
+      if (hasRealProgress) {
+        if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
+        warmupTimerRef.current = null;
+        setWarmupStep(null);
+        return;
+      }
+
+      tick += 1;
+      const next = Math.min(TOTAL_STEPS - 1, 1 + tick);
+      setWarmupStep(next);
+      if (next >= TOTAL_STEPS - 1) {
+        if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
+        warmupTimerRef.current = null;
+      }
+    }, 140);
+
+    return () => {
+      if (warmupTimerRef.current !== null) {
+        window.clearInterval(warmupTimerRef.current);
+        warmupTimerRef.current = null;
+      }
+    };
+  }, [appState, jobOrder.length, progress]);
 
   const applySessionMe = useCallback((me: SessionMeResponse) => {
     const authed = Boolean(me.is_authenticated);
@@ -949,6 +1012,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   };
 
   const originalSize = files.reduce((acc, f) => acc + f.size, 0);
+  const estimatedMinutes = useMemo(() => {
+    // Heuristic: ~40 seconds per image (27 images ≈ 18 minutes).
+    const secondsPerImage = 40;
+    return Math.max(1, Math.round((files.length * secondsPerImage) / 60));
+  }, [files.length]);
   const aggregated = useMemo(() => {
     const statuses = jobOrder.map(id => jobStatuses[id]).filter(Boolean);
     const totalOriginal = statuses.reduce((acc, s) => acc + (s?.original_size ?? 0), 0);
@@ -1492,6 +1560,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                           <p className="font-medium">{files.length} {lang === 'en' ? 'images selected' : 'gambar dipilih'}</p>
                         )}
                         <p className="text-sm text-muted-foreground">{formatBytes(originalSize)}</p>
+                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                          <div>📦 {files.length} {t.imagesDetected}</div>
+                          <div>⏱ {t.estimatedTime}: ~{estimatedMinutes} {t.minuteShort}</div>
+                        </div>
                       </div>
                       <Button size="lg" onClick={startProcessing} className="w-full sm:w-auto font-bold flex gap-2">
                         <Zap className="w-4 h-4" /> {t.startOptimization}
@@ -1526,7 +1598,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="font-mono text-sm font-medium">{Math.round(progress)}%</span>
+                    <span className="font-mono text-sm font-medium">
+                      {warmupStep !== null ? `${warmupStep}/7` : `${Math.round(progress)}%`}
+                    </span>
                   </div>
                 </div>
 
@@ -1543,6 +1617,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                       {getProgressStage()}
                     </motion.p>
                   </AnimatePresence>
+                </div>
+
+                <div className="text-sm text-muted-foreground">
+                  {t.processingHint}
                 </div>
 
                 {activationPending && (
