@@ -119,7 +119,7 @@ const translations = {
     imagesDetected: "images detected",
     estimatedTime: "Estimated time",
     minuteShort: "minutes",
-    connecting: "Connecting…",
+    connecting: "Wait a moment…",
     processingHint: "💡 You can close this tab. Results will be saved to /my-results",
     outOfCredits: "Out of Free Credits.",
     supportIndie: "Keep your websites blazing fast. Upgrade to optimize more images instantly.",
@@ -199,7 +199,7 @@ const translations = {
     imagesDetected: "gambar terdeteksi",
     estimatedTime: "Estimasi waktu",
     minuteShort: "menit",
-    connecting: "Menghubungkan…",
+    connecting: "Tunggu sebentar…",
     processingHint: "💡 Anda boleh menutup tab ini. Hasil akan tersimpan di /my-results",
     outOfCredits: "Kehabisan Kuota Gratis.",
     supportIndie: "Dukung alat indie kami dan dapatkan akses tak terbatas.",
@@ -1567,7 +1567,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="font-mono text-sm font-medium">
+                    <span className="font-mono text-xs sm:text-sm font-medium px-2 text-center">
                       {progress > 0 ? `${Math.round(progress)}%` : t.connecting}
                     </span>
                   </div>
