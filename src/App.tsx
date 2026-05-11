@@ -68,10 +68,13 @@ const translations = {
     optimizationsLeft: "optimizations left",
     upgradeToPro: "Upgrade to Pro",
     lcpKiller: "LCP-Killer Tool ⚡",
-    headlineMain: "Ship lighter images",
-    headlineSub: "fast.",
-    description: "80% smaller files, in a few clicks.",
-    dropYourImage: "Drop your image here",
+    headlineMain: "Ship Lighter Images.",
+    headlineSub: "Crush Your LCP Scores.",
+    description: "Convert to WebP & AVIF. 80% smaller files, zero quality loss. Built for developers.",
+    heroCta: "Start Optimizing Now",
+    socialProof: "Before vs After",
+    socialProofExample: "1.2MB → 140KB",
+    dropYourImage: "Upload Image",
     supportFormat: "Support for JPEG, PNG, WEBP up to 20MB per file.",
     crunching: "Crunching pixels...",
     applying: "Applying advanced WebP/AVIF compression.",
@@ -144,10 +147,13 @@ const translations = {
     optimizationsLeft: "optimasi tersisa",
     upgradeToPro: "Upgrade ke Pro",
     lcpKiller: "Alat LCP-Killer ⚡",
-    headlineMain: "Buat gambar lebih ringan",
-    headlineSub: "cepat.",
-    description: "Ukuran bisa turun hingga 80% dalam beberapa klik.",
-    dropYourImage: "Jatuhkan gambar AI di sini",
+    headlineMain: "Kirim Gambar Lebih Ringan.",
+    headlineSub: "Hancurkan Skor LCP Anda.",
+    description: "Konversi ke WebP & AVIF. Ukuran 80% lebih kecil, tanpa penurunan kualitas. Dibuat untuk developer.",
+    heroCta: "Mulai Optimasi Sekarang",
+    socialProof: "Sebelum vs Sesudah",
+    socialProofExample: "1.2MB → 140KB",
+    dropYourImage: "Upload Gambar",
     supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 20MB)",
     crunching: "Memproses gambar...",
     applying: "Melakukan kompresi super cepat ke format Next-Gen.",
@@ -281,6 +287,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const pollStartedAtRef = useRef<number | null>(null);
   const lastProgressSigRef = useRef<string>("");
   const lastProgressChangeAtRef = useRef<number | null>(null);
+  const dropzoneRef = useRef<HTMLDivElement | null>(null);
   const pendingJobIdsRef = useRef<Set<string>>(new Set<string>());
   const pollCursorRef = useRef(0);
   const pollBackoffMsRef = useRef(0);
@@ -1488,9 +1495,22 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
                     {t.description}
                   </p>
+                  <div className="flex flex-col items-center gap-3 pt-2">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span className="font-medium text-foreground/80">{t.socialProof}:</span>
+                      <span className="font-mono">{t.socialProofExample}</span>
+                    </div>
+                    <Button
+                      size="lg"
+                      onClick={() => dropzoneRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                      className="font-bold flex gap-2"
+                    >
+                      {t.heroCta} <ArrowRight className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </div>
 
-                <div className="max-w-2xl mx-auto relative group">
+                <div ref={dropzoneRef} className="max-w-2xl mx-auto relative group">
                   {/* Decorative background glow */}
                   <div className="absolute inset-0 bg-zinc-200/50 dark:bg-zinc-800/50 rounded-3xl blur-2xl transition-all duration-500 group-hover:bg-zinc-300/50 dark:group-hover:bg-zinc-700/50 -z-10" />
                   
