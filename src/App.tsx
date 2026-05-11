@@ -277,7 +277,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [accountClaimed, setAccountClaimed] = useState(false);
   const [activationPending, setActivationPending] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [warmupStep, setWarmupStep] = useState<number | null>(null);
+  const [warmupPct, setWarmupPct] = useState<number | null>(null);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
@@ -333,7 +333,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
   useEffect(() => {
     if (appState !== "processing") {
-      setWarmupStep(null);
+      setWarmupPct(null);
       if (warmupTimerRef.current !== null) {
         window.clearInterval(warmupTimerRef.current);
         warmupTimerRef.current = null;
@@ -343,7 +343,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
     // If we already have real progress, keep the normal % display.
     if (progress > 0 || jobOrder.length > 0) {
-      setWarmupStep(null);
+      setWarmupPct(null);
       if (warmupTimerRef.current !== null) {
         window.clearInterval(warmupTimerRef.current);
         warmupTimerRef.current = null;
@@ -351,11 +351,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       return;
     }
 
-    // Warmup: show instant movement (1/7 → 6/7) so users don't see 0% at the start.
-    const TOTAL_STEPS = 7;
-    let tick = 0;
+    // Warmup: bump quickly to 5% so users don't stare at 0%.
+    const MAX_WARMUP = 5;
+    let current = 0;
 
-    setWarmupStep(1);
+    setWarmupPct(1);
     if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
 
     warmupTimerRef.current = window.setInterval(() => {
@@ -363,18 +363,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       if (hasRealProgress) {
         if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
         warmupTimerRef.current = null;
-        setWarmupStep(null);
+        setWarmupPct(null);
         return;
       }
 
-      tick += 1;
-      const next = Math.min(TOTAL_STEPS - 1, 1 + tick);
-      setWarmupStep(next);
-      if (next >= TOTAL_STEPS - 1) {
+      current += 1;
+      const next = Math.min(MAX_WARMUP, 1 + current);
+      setWarmupPct(next);
+      if (next >= MAX_WARMUP) {
         if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
         warmupTimerRef.current = null;
       }
-    }, 140);
+    }, 110);
 
     return () => {
       if (warmupTimerRef.current !== null) {
@@ -1621,7 +1621,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="font-mono text-sm font-medium">
-                      {warmupStep !== null ? `${warmupStep}/7` : `${Math.round(progress)}%`}
+                      {warmupPct !== null ? `${warmupPct}%` : `${Math.round(progress)}%`}
                     </span>
                   </div>
                 </div>
