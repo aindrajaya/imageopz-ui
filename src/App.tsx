@@ -119,6 +119,7 @@ const translations = {
     imagesDetected: "images detected",
     estimatedTime: "Estimated time",
     minuteShort: "minutes",
+    connecting: "Connecting…",
     processingHint: "💡 You can close this tab. Results will be saved to /my-results",
     outOfCredits: "Out of Free Credits.",
     supportIndie: "Keep your websites blazing fast. Upgrade to optimize more images instantly.",
@@ -198,6 +199,7 @@ const translations = {
     imagesDetected: "gambar terdeteksi",
     estimatedTime: "Estimasi waktu",
     minuteShort: "menit",
+    connecting: "Menghubungkan…",
     processingHint: "💡 Anda boleh menutup tab ini. Hasil akan tersimpan di /my-results",
     outOfCredits: "Kehabisan Kuota Gratis.",
     supportIndie: "Dukung alat indie kami dan dapatkan akses tak terbatas.",
@@ -277,7 +279,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [accountClaimed, setAccountClaimed] = useState(false);
   const [activationPending, setActivationPending] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [warmupPct, setWarmupPct] = useState<number | null>(null);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
@@ -291,7 +292,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const pendingJobIdsRef = useRef<Set<string>>(new Set<string>());
   const pollCursorRef = useRef(0);
   const pollBackoffMsRef = useRef(0);
-  const warmupTimerRef = useRef<number | null>(null);
   const activationTimerRef = useRef<number | null>(null);
   const activationStartedAtRef = useRef<number | null>(null);
   const startActivationBridgeRef = useRef<null | (() => void)>(null);
@@ -330,59 +330,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [lang]);
-
-  useEffect(() => {
-    if (appState !== "processing") {
-      setWarmupPct(null);
-      if (warmupTimerRef.current !== null) {
-        window.clearInterval(warmupTimerRef.current);
-        warmupTimerRef.current = null;
-      }
-      return;
-    }
-
-    // If we already have real progress, keep the normal % display.
-    if (progress > 0) {
-      setWarmupPct(null);
-      if (warmupTimerRef.current !== null) {
-        window.clearInterval(warmupTimerRef.current);
-        warmupTimerRef.current = null;
-      }
-      return;
-    }
-
-    // Warmup: bump quickly to 5% so users don't stare at 0%.
-    const MAX_WARMUP = 5;
-    let current = 0;
-
-    setWarmupPct(1);
-    if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
-
-    warmupTimerRef.current = window.setInterval(() => {
-      const hasRealProgress = progress > 0;
-      if (hasRealProgress) {
-        if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
-        warmupTimerRef.current = null;
-        setWarmupPct(null);
-        return;
-      }
-
-      current += 1;
-      const next = Math.min(MAX_WARMUP, 1 + current);
-      setWarmupPct(next);
-      if (next >= MAX_WARMUP) {
-        if (warmupTimerRef.current !== null) window.clearInterval(warmupTimerRef.current);
-        warmupTimerRef.current = null;
-      }
-    }, 110);
-
-    return () => {
-      if (warmupTimerRef.current !== null) {
-        window.clearInterval(warmupTimerRef.current);
-        warmupTimerRef.current = null;
-      }
-    };
-  }, [appState, jobOrder.length, progress]);
 
   const applySessionMe = useCallback((me: SessionMeResponse) => {
     const authed = Boolean(me.is_authenticated);
@@ -1621,7 +1568,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="font-mono text-sm font-medium">
-                      {`${Math.max(jobOrder.length > 0 ? 1 : 0, warmupPct ?? 0, Math.round(progress))}%`}
+                      {progress > 0 ? `${Math.round(progress)}%` : t.connecting}
                     </span>
                   </div>
                 </div>
