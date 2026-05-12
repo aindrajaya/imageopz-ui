@@ -286,7 +286,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
-  const [showFeedback, setShowFeedback] = useState(false);
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
   const pollStartedAtRef = useRef<number | null>(null);
@@ -1806,8 +1806,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           </div>
           <div className="flex flex-wrap justify-center md:justify-end gap-x-6 gap-y-2 font-medium">
             <button
-              onClick={() => setShowFeedback(true)}
-              className="hover:text-primary transition-colors whitespace-nowrap"
+              data-tally-open="VLvxeE"
+              data-tally-layout="modal"
+              data-tally-emoji-text="👋"
+              data-tally-emoji-animation="wave"
+              className="hover:text-primary transition-colors whitespace-nowrap cursor-pointer"
             >
               {t.footerContact}
             </button>
@@ -2073,34 +2076,14 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         </DialogContent>
       </Dialog>
 
-      {/* Floating Feedback Widget */}
-      <Dialog open={showFeedback} onOpenChange={setShowFeedback}>
-        <DialogContent className="sm:max-w-md border-border bg-card shadow-xl rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="font-serif">{t.feedbackTitle}</DialogTitle>
-            <DialogDescription>
-              {t.feedbackSub}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <textarea 
-              className="w-full min-h-[120px] p-3 text-sm bg-muted/50 rounded-xl border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all resize-none" 
-              placeholder={t.feedbackPlaceholder}
-            />
-            <Button size="lg" className="w-full font-bold" onClick={() => {
-              toast.success(t.feedbackSent);
-              setShowFeedback(false);
-            }}>
-              {t.sendFeedback}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      
+      {/* Floating Feedback Widget with Tally */}
       <div className="fixed bottom-6 right-6 z-50">
         <button 
-          className="rounded-full w-14 h-14 bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all flex items-center justify-center"
-          onClick={() => setShowFeedback(true)}
+          data-tally-open="VLvxeE"
+          data-tally-layout="modal"
+          data-tally-emoji-text="👋"
+          data-tally-emoji-animation="wave"
+          className="rounded-full w-14 h-14 bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all flex items-center justify-center cursor-pointer"
         >
           <MessageSquare className="w-6 h-6" />
         </button>
