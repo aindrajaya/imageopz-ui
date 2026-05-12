@@ -39,16 +39,16 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <div className="max-w-3xl mx-auto px-4 py-10 space-y-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-serif font-semibold tracking-tight">{copy.title}</h1>
-            <p className="text-sm text-muted-foreground mt-1">{copy.subtitle}</p>
+      <div className="max-w-3xl mx-auto px-4 py-6 sm:py-10 space-y-5 sm:space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-2">
+            <h1 className="text-2xl sm:text-3xl font-serif font-semibold tracking-tight">{copy.title}</h1>
+            <p className="text-sm sm:text-base text-muted-foreground leading-relaxed max-w-xl">{copy.subtitle}</p>
           </div>
-          <div className="flex gap-2 shrink-0">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:shrink-0">
             <Link
               to={lang === "id" ? "/id" : "/"}
-              className="px-3 py-2 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors"
+              className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors"
             >
               {copy.back}
             </Link>
@@ -59,7 +59,7 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
                   clearStoredResults();
                   setBatches([]);
                 }}
-                className="px-3 py-2 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors"
+                className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors"
               >
                 {copy.clear}
               </button>
@@ -68,17 +68,19 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
         </div>
 
         {batches.length === 0 ? (
-          <div className="rounded-xl border border-border bg-card p-6 text-sm text-muted-foreground">{copy.empty}</div>
+          <div className="rounded-xl border border-border bg-card p-5 sm:p-6 text-sm text-muted-foreground text-center sm:text-left">
+            {copy.empty}
+          </div>
         ) : (
           <div className="space-y-4">
             {batches.map((b) => (
-              <div key={b.id} className="rounded-xl border border-border bg-card p-4 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <div className="min-w-0">
+              <div key={b.id} className="rounded-xl border border-border bg-card p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 space-y-1">
                     <div className="text-sm font-semibold truncate">
                       {b.items.length} file{b.items.length === 1 ? "" : "s"}
                     </div>
-                    <div className="text-xs text-muted-foreground">
+                    <div className="text-xs text-muted-foreground leading-relaxed">
                       {formatWhen(b.created_at)} • expires {formatWhen(b.expires_at)}
                     </div>
                   </div>
@@ -87,7 +89,7 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
                     onClick={() => {
                       for (const it of b.items) window.open(it.url, "_blank", "noopener,noreferrer");
                     }}
-                    className="px-3 py-2 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                    className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors sm:w-auto"
                   >
                     {copy.openAll}
                   </button>
@@ -95,15 +97,15 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
 
                 <div className="divide-y divide-border/60 rounded-lg border border-border overflow-hidden">
                   {b.items.map((it) => (
-                    <div key={it.job_id} className="flex items-center justify-between gap-3 p-3 bg-background">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">{it.filename}</div>
-                        <div className="text-xs text-muted-foreground truncate">{it.url}</div>
+                    <div key={it.job_id} className="flex flex-col gap-3 p-3 bg-background sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0 space-y-1">
+                        <div className="text-sm font-medium break-words">{it.filename}</div>
+                        <div className="text-xs text-muted-foreground break-all sm:truncate">{it.url}</div>
                       </div>
                       <button
                         type="button"
                         onClick={() => window.open(it.url, "_blank", "noopener,noreferrer")}
-                        className="px-3 py-2 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors shrink-0"
+                        className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors shrink-0 sm:w-auto"
                       >
                         Open
                       </button>
