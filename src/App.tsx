@@ -1722,8 +1722,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                         ))}
                     </div>
                   )}
-                  <button onClick={handleShare} className="rounded-full w-full sm:w-auto px-8 py-3 bg-secondary text-secondary-foreground font-bold hover:bg-secondary/80 transition-colors flex items-center justify-center gap-2">
-                    <Share2 className="w-4 h-4" /> {t.shareResult}
+                  <button onClick={() => navigate(lang === "id" ? "/id/my-results" : "/my-results")} className="rounded-full w-full sm:w-auto px-8 py-3 bg-secondary text-secondary-foreground font-bold hover:bg-secondary/80 transition-colors flex items-center justify-center gap-2">
+                    <ArrowRight className="w-4 h-4" /> {lang === "en" ? "See Results page" : "Lihat halaman Hasil"}
                   </button>
                 </div>
 
