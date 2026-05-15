@@ -72,6 +72,10 @@ const translations = {
     headlineSub: "Crush Your LCP Scores.",
     description: "Convert to WebP & AVIF. 80% smaller files, zero quality loss. Built for developers.",
     heroCta: "Start Optimizing Now",
+    tryFreeCta: "Try 3 Free Images",
+    guestBadge: "No registration",
+    guestMessageShort: "No registration required for your first 3 images.",
+    dropGuestHint: "Try as guest — {n} free images. No email required.",
     socialProof: "Before vs After",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Image",
@@ -154,6 +158,10 @@ const translations = {
     headlineSub: "Hancurkan Skor LCP Anda.",
     description: "Konversi ke WebP & AVIF. Ukuran 80% lebih kecil, tanpa penurunan kualitas. Dibuat untuk developer.",
     heroCta: "Mulai Optimasi Sekarang",
+    tryFreeCta: "Coba 3 Gambar Gratis",
+    guestBadge: "Tanpa registrasi",
+    guestMessageShort: "Tidak perlu registrasi untuk 3 gambar pertama Anda.",
+    dropGuestHint: "Coba sebagai tamu — {n} gambar gratis. Tanpa email.",
     socialProof: "Sebelum vs Sesudah",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Gambar",
@@ -289,6 +297,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [showFeedback, setShowFeedback] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
+  const loadTimeRef = useRef<number>(Date.now());
+  const hadInteractionRef = useRef(false);
+  const [abVariant, setAbVariant] = useState<string | null>(null);
   const pollStartedAtRef = useRef<number | null>(null);
   const lastProgressSigRef = useRef<string>("");
   const lastProgressChangeAtRef = useRef<number | null>(null);
@@ -547,6 +558,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   // `isPro` is derived from backend `/api/v1/session/me`; don't persist as a local source of truth.
 
   const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
+    try {
+      if (acceptedFiles.length > 0) posthog?.capture('uploader_start', { file_count_hint: acceptedFiles.length, is_pro: isPro, variant: abVariant });
+    } catch {
+      // ignore
+    }
     const maxMb = isPro ? 25 : 10;
     if (fileRejections.length > 0) {
       const rejection = fileRejections[0];
@@ -616,6 +632,62 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       is_pro: isPro,
     });
   }, [quota, lang, isPro, posthog]);
+
+  // Track first-interaction and bounce (leave quickly without interacting)
+  useEffect(() => {
+    loadTimeRef.current = Date.now();
+    const markInteraction = () => {
+      hadInteractionRef.current = true;
+    };
+
+    const onPageHide = () => {
+      const elapsed = Date.now() - loadTimeRef.current;
+      if (!hadInteractionRef.current && elapsed < 5000) {
+        try {
+          posthog?.capture('landing_bounce', { elapsed_ms: elapsed, path: window.location?.pathname, variant: abVariant });
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    window.addEventListener('click', markInteraction, { once: true });
+    window.addEventListener('keydown', markInteraction, { once: true });
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
+
+    return () => {
+      window.removeEventListener('click', markInteraction as any);
+      window.removeEventListener('keydown', markInteraction as any);
+      window.removeEventListener('pagehide', onPageHide as any);
+      window.removeEventListener('beforeunload', onPageHide as any);
+    };
+  }, [posthog]);
+
+  // A/B test: assign variant on client mount and emit exposure event
+  useEffect(() => {
+    try {
+      let v: string | null = null;
+      try {
+        v = localStorage.getItem('ab_landing_guest_variant');
+      } catch {
+        v = null;
+      }
+      if (!v) {
+        // Simple 50/50 split: 'control' vs 'variant_bold'
+        v = Math.random() < 0.5 ? 'control' : 'variant_bold';
+        try {
+          localStorage.setItem('ab_landing_guest_variant', v);
+        } catch {}
+      }
+      setAbVariant(v);
+      try {
+        posthog?.capture('ab_test_exposure', { experiment: 'landing_guest_copy', variant: v });
+      } catch {}
+    } catch {
+      // noop
+    }
+  }, [posthog]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -1466,13 +1538,25 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                       <span className="font-medium text-foreground/80">{t.socialProof}:</span>
                       <span className="font-mono">{t.socialProofExample}</span>
                     </div>
-                    <Button
-                      size="lg"
-                      onClick={() => dropzoneRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
-                      className="font-bold flex gap-2"
-                    >
-                      {t.heroCta} <ArrowRight className="w-4 h-4" />
-                    </Button>
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="flex items-center gap-3">
+                        <span className="px-3 py-1 bg-secondary text-primary rounded-full text-xs font-semibold tracking-wider">{t.guestBadge}</span>
+                        <Button
+                          size="lg"
+                          onClick={() => {
+                            try {
+                              posthog?.capture('landing_try_guest_click', { source: 'hero', is_authenticated: isAuthenticated, is_pro: isPro, variant: abVariant });
+                            } catch {}
+                            hadInteractionRef.current = true;
+                            dropzoneRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          }}
+                          className="font-bold flex gap-2"
+                        >
+                          {t.tryFreeCta} <ArrowRight className="w-4 h-4" />
+                        </Button>
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-2">{t.guestMessageShort}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -1494,9 +1578,18 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                         <UploadCloud className="w-10 h-10" strokeWidth={1.5} />
                       </div>
                       <h3 className="font-serif text-2xl font-medium mb-2">{t.dropYourImage}</h3>
-                      <p id="dropzone-description" className="text-muted-foreground mb-6 max-w-[250px]">
+                      <p id="dropzone-description" className="text-muted-foreground mb-2 max-w-[250px]">
                         {t.supportFormat}
                       </p>
+                      <div className="text-sm text-muted-foreground mb-6 max-w-[300px] flex flex-col items-center">
+                        <div className="text-sm">
+                          {!isAuthenticated && !isPro ? (
+                            <span className="text-sm text-muted-foreground">{t.dropGuestHint.replace('{n}', String(quota))}</span>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">{quota} {t.optimizationsLeft}</span>
+                          )}
+                        </div>
+                      </div>
                       <div className="flex gap-2 justify-center" aria-hidden="true">
                         <span className="px-3 py-1 bg-secondary text-primary rounded-lg text-xs font-bold tracking-wider uppercase">JPG</span>
                         <span className="px-3 py-1 bg-secondary text-primary rounded-lg text-xs font-bold tracking-wider uppercase">PNG</span>
