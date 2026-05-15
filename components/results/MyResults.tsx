@@ -22,6 +22,9 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
       ? {
           title: "Recent Results",
           subtitle: "Results are saved locally in this browser. Links may expire.",
+          signupTitle: "Love the result?",
+          signupBody: "Sign up to save your history and get 100 credits.",
+          signupCta: "Sign up",
           empty: "No saved results yet.",
           back: "Back to app",
           clear: "Clear saved results",
@@ -30,6 +33,9 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
       : {
           title: "Hasil Terbaru",
           subtitle: "Hasil disimpan lokal di browser ini. Link bisa kedaluwarsa.",
+          signupTitle: "Suka hasilnya?",
+          signupBody: "Daftar untuk menyimpan riwayat Anda dan dapatkan 100 kredit.",
+          signupCta: "Daftar",
           empty: "Belum ada hasil yang tersimpan.",
           back: "Kembali ke aplikasi",
           clear: "Hapus semua hasil",
@@ -40,6 +46,19 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="max-w-3xl mx-auto px-4 py-6 sm:py-10 space-y-5 sm:space-y-6">
+        <div className="rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-sm flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-lg sm:text-xl font-serif font-semibold tracking-tight">{copy.signupTitle}</h2>
+            <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl">{copy.signupBody}</p>
+          </div>
+          <Link
+            to={lang === "id" ? "/id?signup=1" : "/?signup=1"}
+            className="inline-flex w-full sm:w-auto items-center justify-center px-5 py-2.5 text-sm font-semibold rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            {copy.signupCta}
+          </Link>
+        </div>
+
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
             <h1 className="text-2xl sm:text-3xl font-serif font-semibold tracking-tight">{copy.title}</h1>

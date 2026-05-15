@@ -240,6 +240,7 @@ const translations = {
 function AppContent({ lang }: { lang: "en" | "id" }) {
   const t = translations[lang];
   const navigate = useNavigate();
+  const location = useLocation();
   const posthog = usePostHog();
   const { accessToken, email: authEmail, signInWithMagicLink, signOut, loadingAuth } = useAuth();
   const MAGIC_LINK_COOLDOWN_MS = 120_000;
@@ -286,7 +287,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [showSignIn, setShowSignIn] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
   const [signInSending, setSignInSending] = useState(false);
-  const [signInPurpose, setSignInPurpose] = useState<"restore">("restore");
+  const [signInPurpose, setSignInPurpose] = useState<"restore" | "signup">("restore");
   const [magicLinkCooldownMs, setMagicLinkCooldownMs] = useState(0);
   const [accountClaimed, setAccountClaimed] = useState(false);
   const [activationPending, setActivationPending] = useState(false);
@@ -465,6 +466,24 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
   }, [showSignIn, signInEmail]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("signup") !== "1") return;
+
+    setSignInPurpose("signup");
+    setShowSignIn(true);
+
+    params.delete("signup");
+    const nextSearch = params.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch ? `?${nextSearch}` : "",
+      },
+      { replace: true }
+    );
+  }, [location.pathname, location.search, navigate]);
 
   // Sync session state from backend (authoritative for pro + remaining credits)
   useEffect(() => {
@@ -1988,11 +2007,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       <Dialog open={showSignIn} onOpenChange={setShowSignIn}>
         <DialogContent className="sm:max-w-md border-border bg-card shadow-xl rounded-2xl">
           <DialogHeader>
-            <DialogTitle className="font-serif">{signInPurpose === "restore" ? "Restore Pro" : "Sign in"}</DialogTitle>
+            <DialogTitle className="font-serif">{signInPurpose === "restore" ? "Restore Pro" : "Sign up"}</DialogTitle>
             <DialogDescription>
               {signInPurpose === "restore"
                 ? "We’ll email you a magic link. After signing in, we’ll verify whether this account has Pro."
-                : "We’ll email you a magic link. No password required."}
+                : "We’ll email you a magic link so you can save your history and claim 100 credits. No password required."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
