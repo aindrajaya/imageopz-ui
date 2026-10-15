@@ -53,3 +53,16 @@ dist/ contains no GEMINI reference.
 - Move `shadcn` to devDependencies or drop it; dedupe `vite` (listed twice); `tsx` appears unused.
 - Code-split the 1.2 MB bundle; App.tsx ~2,300 lines; no ESLint or tests.
 - repo-safety.yml still uses actions/checkout@v4 and ubuntu-latest (left unchanged by contract).
+
+## Amendment (2026-10-15) - repo-safety rule 3 false positive
+Problem: after the T-DOCS-UI commit, check-repo-safety.sh failed on HEAD because this task file describes the
+download-and-execute patterns in prose, and the check scanned every tracked file.
+Change: the check that flags a file combining a dynamic-evaluation call with a base64-decode or network-fetch call now
+scans only tracked code files (.ts .tsx .js .jsx .mjs .cjs .html .sh), still excluding the script itself.
+Unchanged: the obfuscation-marker check (all tracked files except lockfiles, the script and .github/), the vite.config
+dynamic-evaluation check, the .env/.gitignore checks and the install-script check. The script still uses only git, grep
+and file (xargs feeds grep).
+Verification:
+- HEAD (6e21540 + this change): exit 0 (before the change: exit 1 on this file).
+- Read-only replay against 8179d01 with `git grep` (no checkout): the combined-call check and the vite.config check
+  both fire on vite.config.ts.
