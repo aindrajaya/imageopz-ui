@@ -1,0 +1,2 @@
+# malware indicator from the 2026-05-15 compromise, not a credential; see SECURITY.md
+8179d0195c42e1e70d76a01d5d5278f24f726a31:.env:generic-api-key:1

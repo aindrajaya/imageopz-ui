@@ -23,9 +23,11 @@ src_files() { git ls-files -z -- ':!*lock*' ':!scripts/check-repo-safety.sh' ':!
 while IFS= read -r f; do bad "obfuscation markers in $f"; done < <(src_files | xargs -0 grep -IlE \
   '(\\u00[0-9A-Fa-f]{2}){4,}|global\.[a-z]\s*=\s*require|_0x[0-9a-f]{4,}|eval\(atob' 2>/dev/null)
 # eval( in the same file as atob( or fetch( = download-and-execute
+# Code files only: docs that describe these patterns are not executable.
+code_files() { git ls-files -z -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.html' '*.sh' ':!scripts/check-repo-safety.sh'; }
 while IFS= read -r f; do
   grep -qE 'atob\(|fetch\(' "$f" && bad "$f combines eval( with atob( or fetch("
-done < <(src_files | xargs -0 grep -IlE 'eval\(' 2>/dev/null)
+done < <(code_files | xargs -0 grep -IlE 'eval\(' 2>/dev/null)
 # build configs run on every dev/build, so any eval( there is a fail
 while IFS= read -r f; do bad "$f (vite config) contains eval("; done < <(git ls-files -z -- 'vite.config.*' | xargs -0 grep -lE 'eval\(' 2>/dev/null)
 
