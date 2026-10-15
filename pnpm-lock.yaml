@@ -44,9 +44,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      dotenv:
-        specifier: ^17.2.3
-        version: 17.4.2
       express:
         specifier: ^4.21.2
         version: 4.22.1
@@ -59,9 +56,6 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      node-fetch:
-        specifier: ^3.3.2
-        version: 3.3.2
       posthog-js:
         specifier: ^1.372.10
         version: 1.438.10(react@19.2.5)
