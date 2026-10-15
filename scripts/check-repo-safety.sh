@@ -18,10 +18,20 @@ while IFS= read -r f; do
   esac
 done < <(git ls-files)
 
-# 3. Obfuscation markers in tracked source (excluding lockfiles)
-git ls-files -z -- ':!*lock*' ':!scripts/check-repo-safety.sh' ':!.github/*' | xargs -0 grep -IlE \
-  '(\\u00[0-9A-Fa-f]{2}){4,}|global\.[a-z]\s*=\s*require|_0x[0-9a-f]{4,}|eval\(atob' 2>/dev/null \
-  | while read -r f; do echo "FAIL: obfuscation markers in $f"; done | grep -q FAIL && fail=1
+# 3. Obfuscation markers and remote-code loaders in tracked source (excluding lockfiles)
+src_files() { git ls-files -z -- ':!*lock*' ':!scripts/check-repo-safety.sh' ':!.github/*'; }
+while IFS= read -r f; do bad "obfuscation markers in $f"; done < <(src_files | xargs -0 grep -IlE \
+  '(\\u00[0-9A-Fa-f]{2}){4,}|global\.[a-z]\s*=\s*require|_0x[0-9a-f]{4,}|eval\(atob' 2>/dev/null)
+# eval( in the same file as atob( or fetch( = download-and-execute
+while IFS= read -r f; do
+  grep -qE 'atob\(|fetch\(' "$f" && bad "$f combines eval( with atob( or fetch("
+done < <(src_files | xargs -0 grep -IlE 'eval\(' 2>/dev/null)
+# build configs run on every dev/build, so any eval( there is a fail
+while IFS= read -r f; do bad "$f (vite config) contains eval("; done < <(git ls-files -z -- 'vite.config.*' | xargs -0 grep -lE 'eval\(' 2>/dev/null)
+
+# 5. Secrets file tracked, or .gitignore ignoring itself
+git ls-files --error-unmatch .env >/dev/null 2>&1 && bad ".env is tracked"
+grep -qxE '/?\.gitignore' .gitignore 2>/dev/null && bad ".gitignore ignores itself"
 
 # 4. Install-time scripts that run arbitrary code
 grep -nE '"(preinstall|install|postinstall|prepare)"' package.json && bad "package.json has install lifecycle scripts (review them)"
