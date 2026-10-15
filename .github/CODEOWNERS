@@ -1,0 +1,6 @@
+# Changes to executable-by-convention files need owner review
+/.vscode/            @aindrajaya
+/.github/            @aindrajaya
+/scripts/            @aindrajaya
+/package.json        @aindrajaya
+/.gitignore          @aindrajaya
