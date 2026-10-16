@@ -23,7 +23,7 @@ Shared agent memory for imageopz-ui (CLAUDE.md is a symlink to this file). Every
 - pnpm install --frozen-lockfile; pnpm run dev (port 3000, proxies /api to the backend)
 - pnpm run lint (tsc --noEmit; no ESLint configured); pnpm run build (vite build -> dist/)
 - ./scripts/check-repo-safety.sh - must exit 0 before any install/dev/build
-- No test suite exists yet
+- pnpm run test (vitest run; lib/**/*.test.ts, node env, vitest.config.ts) - unit tests, no DOM
 
 ## Rules
 - Never run install, dev or build on commits or branches you have not inspected; never on commits before fd1032e - build tooling executes repository code (SECURITY.md)
