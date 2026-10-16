@@ -35,3 +35,6 @@ Shared agent memory for imageopz-ui (CLAUDE.md is a symlink to this file). Every
 - Stay inside the task's scope and authorization; the owner commits and pushes; no git stash/reset/clean or history rewrite
 - Fix lint/type/build problems your change introduces; log pre-existing defects as follow-ups in the task file
 - Plain hyphens, no em-dashes; no AI co-author trailers - owner convention
+
+## Learned
+- 2026-10-16 - Check the current branch before committing; main is protected, so work goes on a feature branch.

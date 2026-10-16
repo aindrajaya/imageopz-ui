@@ -16,6 +16,7 @@ import {
   FileArchive,
   ArrowRight,
   Menu,
+  Loader2,
   X
 } from "lucide-react";
 import { toast } from "sonner";
@@ -38,10 +39,21 @@ import {
 import { saveResultBatch } from "@/lib/resultsStore";
 import {
   uploadBatch,
+  classifyStartError,
   describeFailure,
   describeRejection,
   type UploadItem,
 } from "@/lib/uploads";
+import {
+  batchProgress,
+  fetchStatuses,
+  isStatusUnavailable,
+  isTerminalStatus,
+  jobPhase,
+  pickDueJobs,
+  runPollLoop,
+  type JobHealth,
+} from "@/lib/statusPolling";
 import { ACCEPTED_IMAGE_TYPES, FREE_LIMITS, PRO_LIMITS, isAcceptedImage, maxMegabytes, tierLimits } from "@/lib/uploadLimits";
 
 const FREE_MB = maxMegabytes(false);
@@ -161,6 +173,7 @@ const translations = {
       done: "done",
       rejected: "rejected",
       failed: "failed",
+      unavailable: "temporarily unavailable",
     },
     cancel: "Cancel",
     feedbackTitle: "Found a bug? Have an idea?",
@@ -262,6 +275,7 @@ const translations = {
       done: "selesai",
       rejected: "ditolak",
       failed: "gagal",
+      unavailable: "sementara tidak tersedia",
     },
     cancel: "Batal",
     feedbackTitle: "Ada bug? Punya ide fitur?",
@@ -337,9 +351,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [uploading, setUploading] = useState(false);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
+  // Per-job /status failures; jobs past the threshold render as "temporarily unavailable".
+  const jobHealthRef = useRef<JobHealth>(new Map());
+  const [unavailableJobs, setUnavailableJobs] = useState<ReadonlySet<string>>(() => new Set());
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const pollTimerRef = useRef<number | null>(null);
+  const pollStopRef = useRef<(() => void) | null>(null);
   const loadTimeRef = useRef<number>(Date.now());
   const hadInteractionRef = useRef(false);
   const [abVariant, setAbVariant] = useState<string | null>(null);
@@ -367,19 +384,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const SESSION_ME_MIN_INTERVAL_MS = 5_000;
   const SESSION_ME_IDLE_CAP_MS = 45_000;
 
-  async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-    const results: R[] = new Array(items.length);
-    let nextIndex = 0;
-    const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-      while (true) {
-        const i = nextIndex++;
-        if (i >= items.length) return;
-        results[i] = await fn(items[i]);
-      }
-    });
-    await Promise.all(workers);
-    return results;
-  }
 
   useEffect(() => {
     jobStatusesRef.current = jobStatuses;
@@ -754,10 +758,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   } as any);
 
   const stopPolling = useCallback(() => {
-    if (pollTimerRef.current !== null) {
-      window.clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
+    pollStopRef.current?.();
+    pollStopRef.current = null;
     pollStartedAtRef.current = null;
     lastProgressSigRef.current = "";
     lastProgressChangeAtRef.current = null;
@@ -848,6 +850,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setJobOrder([]);
     setJobStatuses({});
     jobStatusesRef.current = {};
+    jobHealthRef.current = new Map();
+    setUnavailableJobs(new Set());
     setUploadItems([]);
     pollStartedAtRef.current = Date.now();
     lastProgressSigRef.current = "";
@@ -917,36 +921,32 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         const pending = Array.from(pendingJobIdsRef.current) as string[];
         if (pending.length === 0) return;
 
-        const start = pollCursorRef.current % pending.length;
-        const picks: string[] = [];
-        const maxPicks = Math.min(MAX_STATUS_CHECKS_PER_TICK, pending.length);
-        for (let i = 0; i < maxPicks; i++) picks.push(pending[(start + i) % pending.length]);
-        pollCursorRef.current = (start + maxPicks) % pending.length;
+        // Jobs still backing off after a failed fetch are skipped until their retry time.
+        const health = jobHealthRef.current;
+        const { picks, cursor } = pickDueJobs(pending, health, Date.now(), MAX_STATUS_CHECKS_PER_TICK, pollCursorRef.current);
+        pollCursorRef.current = cursor;
 
-        let saw429 = false;
-        const statuses = await mapLimit(
+        const { fresh, rateLimited: saw429 } = await fetchStatuses(
           picks,
-          MAX_STATUS_CONCURRENCY,
-          async (id): Promise<JobStatusResponse | null> => {
-            try {
-              return await getJobStatus(id, { sessionId });
-            } catch (e) {
-              if (e instanceof ImageOpzApiError && e.status === 429) saw429 = true;
-              return null;
-            }
-          }
+          (id) => getJobStatus(id, { sessionId }),
+          health,
+          { now: Date.now(), concurrency: MAX_STATUS_CONCURRENCY }
         );
+        if (health !== jobHealthRef.current) return; // a new batch or reset started meanwhile
 
-        const fresh = statuses.filter(Boolean) as JobStatusResponse[];
         if (fresh.length > 0) {
           const nextMap = { ...jobStatusesRef.current };
           for (const s of fresh) nextMap[s.job_id] = s;
           jobStatusesRef.current = nextMap;
           setJobStatuses(nextMap);
           for (const s of fresh) {
-            if (s.status === "done" || s.status === "failed" || s.status === "rejected") pendingJobIdsRef.current.delete(s.job_id);
+            if (isTerminalStatus(s.status)) pendingJobIdsRef.current.delete(s.job_id);
           }
         }
+        const unavailable = pending.filter((id) => pendingJobIdsRef.current.has(id) && isStatusUnavailable(health, id));
+        setUnavailableJobs((prev) =>
+          prev.size === unavailable.length && unavailable.every((id) => prev.has(id)) ? prev : new Set(unavailable)
+        );
 
         if (saw429) {
           const next = Math.min(
@@ -962,7 +962,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         // Detect lack of progress / stuck jobs
         const allKnown = order.map(id => jobStatusesRef.current[id]).filter(Boolean) as JobStatusResponse[];
         const sig = allKnown
-          .map(s => `${s.job_id}:${s.status}:${s.progress ?? ""}:${s.r2_url ?? ""}`)
+          .map(s => `${s.job_id}:${s.status}:${s.r2_url ?? ""}`)
           .sort()
           .join("|");
         if (sig !== lastProgressSigRef.current) {
@@ -970,17 +970,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           lastProgressChangeAtRef.current = Date.now();
         }
 
-        const progressValues = allKnown.map(s => {
-          if (typeof s.progress === "number") return Math.max(0, Math.min(100, s.progress));
-          if (s.status === "done" || s.status === "failed" || s.status === "rejected") return 100;
-          if (s.status === "processing") return 50;
-          return 5;
-        });
-        const avg =
-          progressValues.length === 0
-            ? 0
-            : progressValues.reduce((a, b) => a + b, 0) / progressValues.length;
-        setProgress(avg);
+        // Per-job progress is always null (server T-007): the bar counts finished files.
+        setProgress(batchProgress(order, jobStatusesRef.current).percent);
 
         const allFinished = pendingJobIdsRef.current.size === 0;
         if (allFinished) {
@@ -1025,22 +1016,23 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           } catch {
             // best effort
           }
-          const doneCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "done").length;
-          const failedCount = (statuses.filter(Boolean) as JobStatusResponse[]).filter(s => s?.status === "failed").length;
+          const doneCount = allKnown.filter(s => s.status === "done").length;
+          const failedCount = allKnown.filter(s => s.status === "failed").length;
           posthog?.capture('optimization_completed', {
             file_count: order.length,
             done_count: doneCount,
             failed_count: failedCount,
             is_pro: isPro,
           });
-          if (statuses.some(s => s.status === "done")) fireConfetti();
+          if (doneCount > 0) fireConfetti();
           return;
         }
 
-        // Timeout guard: if nothing changes for 2 minutes, stop and prompt user
+        // Timeout guard: if nothing changes for 2 minutes, stop and prompt user.
+        // Not while /status itself is failing: those files show "temporarily unavailable" and keep retrying.
         const now = Date.now();
         const lastChange = lastProgressChangeAtRef.current ?? now;
-        if (now - lastChange > 2 * 60 * 1000) {
+        if (unavailable.length === 0 && now - lastChange > 2 * 60 * 1000) {
           stopPolling();
           setAppState("preview");
           toast.error(lang === "en" ? "Processing is taking too long" : "Proses terlalu lama", {
@@ -1052,23 +1044,25 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         }
       };
 
-      await loadOnce();
-      const pollNext = async () => {
-        if (pollTimerRef.current === null) return;
-        await loadOnce();
-        if (pollTimerRef.current === null) return;
-
-        const pendingCount = pendingJobIdsRef.current.size;
-        let delay =
-          pendingCount >= 25 ? 4500 :
-          pendingCount >= 15 ? 3500 :
-          pendingCount >= 8 ? 2500 :
-          pendingCount >= 3 ? 1600 :
-          1200;
-        if (pollBackoffMsRef.current > 0) delay = Math.max(delay, pollBackoffMsRef.current);
-        pollTimerRef.current = window.setTimeout(pollNext, delay);
-      };
-      pollTimerRef.current = window.setTimeout(pollNext, 700);
+      // A failing tick (bad response, render-state bug) is retried with backoff instead of ending polling.
+      const stopThisLoop: () => void = runPollLoop({
+        errorDelayMs: POLL_BACKOFF_MIN_MS,
+        onError: (e) => console.warn("Status poll failed; retrying", e),
+        tick: async () => {
+          await loadOnce();
+          if (pollStopRef.current !== stopThisLoop || pendingJobIdsRef.current.size === 0) return null;
+          const pendingCount = pendingJobIdsRef.current.size;
+          let delay =
+            pendingCount >= 25 ? 4500 :
+            pendingCount >= 15 ? 3500 :
+            pendingCount >= 8 ? 2500 :
+            pendingCount >= 3 ? 1600 :
+            1200;
+          if (pollBackoffMsRef.current > 0) delay = Math.max(delay, pollBackoffMsRef.current);
+          return delay;
+        },
+      });
+      pollStopRef.current = stopThisLoop;
     } catch (err) {
       stopPolling();
       setAppState("preview");
@@ -1077,39 +1071,26 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         error_status: err instanceof ImageOpzApiError ? err.status : null,
         is_pro: isPro,
       });
-      if (err instanceof ImageOpzApiError) {
-        // If backend rate-limits/quota-limits, reflect that locally so UI blocks further requests.
-        if (!isPro && err.status === 429) {
-          const code = err.payload?.error;
-          const retryAfter =
-            typeof (err.payload?.details as any)?.retry_after_ms === "number"
-              ? (err.payload?.details as any).retry_after_ms
-              : null;
-
-          if (code === "ACTIVATION_PENDING") {
-            startActivationBridge();
-            toast.warning("Activating Pro…", {
-              description: "Payment detected but not activated yet. We’ll retry automatically.",
-            });
-            if (retryAfter && retryAfter > 0) {
-              window.setTimeout(() => startProcessing(), Math.min(60_000, retryAfter));
-            }
-            return;
-          }
-
-          // Default fallback: treat as free-tier limit/rate-limit and guide user.
-          startActivationBridge();
-          toast.warning("Not activated yet", {
-            description: "Payment might still be activating. Please retry in a few seconds.",
-          });
-          return;
-        }
-        toast.error(lang === "en" ? "Request failed" : "Permintaan gagal", {
-          description: err.payload?.message || err.message,
-        });
-      } else {
-        toast.error(lang === "en" ? "Request failed" : "Permintaan gagal");
+      const action = classifyStartError(err, isPro);
+      if (action.kind === "quota_exceeded") {
+        // Free credits or batch size used up: show the upgrade prompt; the refresh syncs the credit count.
+        setShowPaywall(true);
+        refreshSessionMe({ force: true }).catch(() => {});
+        return;
       }
+      if (action.kind === "activation_pending") {
+        startActivationBridge();
+        toast.warning("Activating Pro…", {
+          description: "Payment detected but not activated yet. We’ll retry automatically.",
+        });
+        if (action.retryAfterMs && action.retryAfterMs > 0) {
+          window.setTimeout(() => startProcessing(), Math.min(60_000, action.retryAfterMs));
+        }
+        return;
+      }
+      toast.error(lang === "en" ? "Request failed" : "Permintaan gagal", {
+        description: action.message ?? undefined,
+      });
     }
   };
 
@@ -1133,6 +1114,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setJobOrder([]);
     setJobStatuses({});
     jobStatusesRef.current = {};
+    jobHealthRef.current = new Map();
+    setUnavailableJobs(new Set());
     setUploadItems([]);
   };
 
@@ -1141,16 +1124,15 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   };
 
   // Per-file label: upload state until /complete accepts the job, then the polled job status.
-  const describeItem = (item: UploadItem): { label: string; detail: string | null } => {
+  const describeItem = (item: UploadItem): { label: string; detail: string | null; busy?: boolean } => {
     const s = item.jobId ? jobStatuses[item.jobId] : undefined;
-    if (s && (item.state === "processing" || item.state === "done" || item.state === "failed") && !item.failure) {
-      if (s.status === "done") return { label: t.fileStates.done, detail: null };
-      if (s.status === "failed") return { label: t.fileStates.failed, detail: s.error_message ?? null };
-      if (s.status === "rejected") return { label: t.fileStates.rejected, detail: describeRejection(s.rejection_reason, lang) };
-      return {
-        label: t.fileStates.processing + (typeof s.progress === "number" ? ` (${Math.round(s.progress)}%)` : ""),
-        detail: null,
-      };
+    const polled = item.jobId !== null && jobOrder.includes(item.jobId);
+    if (polled && (item.state === "processing" || item.state === "done" || item.state === "failed") && !item.failure) {
+      // Indeterminate while queued/processing: the backend reports no per-job percentage.
+      const phase = jobPhase(s, unavailableJobs.has(item.jobId as string));
+      if (phase === "failed") return { label: t.fileStates.failed, detail: s?.error_message ?? null };
+      if (phase === "rejected") return { label: t.fileStates.rejected, detail: describeRejection(s?.rejection_reason, lang) };
+      return { label: t.fileStates[phase], detail: null, busy: phase === "queued" || phase === "processing" };
     }
     if (item.state === "uploading") {
       const pct = item.size > 0 ? Math.round((item.loaded / item.size) * 100) : 0;
@@ -1803,7 +1785,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   />
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="font-mono text-xs sm:text-sm font-medium px-2 text-center">
-                      {progress > 0 ? `${Math.round(progress)}%` : t.connecting}
+                      {!uploading && jobOrder.length > 0
+                        ? `${batchProgress(jobOrder, jobStatuses).completed}/${jobOrder.length}`
+                        : progress > 0 ? `${Math.round(progress)}%` : t.connecting}
                     </span>
                   </div>
                 </div>
@@ -1849,12 +1833,15 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 {uploadItems.length > 0 && (
                   <div className="text-left max-w-xl mx-auto space-y-2 text-xs text-muted-foreground">
                     {uploadItems.map((item) => {
-                      const { label, detail } = describeItem(item);
+                      const { label, detail, busy } = describeItem(item);
                       return (
                         <div key={item.index} className="space-y-0.5">
                           <div className="flex justify-between gap-3">
                             <span className="font-mono truncate max-w-[70%]">{item.name}</span>
-                            <span>{label}</span>
+                            <span className="inline-flex items-center gap-1">
+                              {busy && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+                              {label}
+                            </span>
                           </div>
                           {detail && <div className="text-destructive">{detail}</div>}
                         </div>

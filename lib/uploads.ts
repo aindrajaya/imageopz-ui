@@ -435,3 +435,23 @@ export function describeRejection(reason: string | null | undefined, lang: "en" 
 export function describeFailure(failure: UploadFailure, lang: "en" | "id"): string {
   return FAILURE_TEXT[lang][failure];
 }
+
+export type StartErrorAction =
+  | { kind: "quota_exceeded" }
+  | { kind: "activation_pending"; retryAfterMs: number | null }
+  | { kind: "error"; message: string | null };
+
+// What the UI does when starting a batch fails. Codes from the presign contract (429 QUOTA_EXCEEDED /
+// ACTIVATION_PENDING); a free user out of credits gets the upgrade prompt, Pro and other errors the message.
+export function classifyStartError(err: unknown, isPro: boolean): StartErrorAction {
+  if (!(err instanceof ImageOpzApiError)) return { kind: "error", message: null };
+  const code = err.payload?.error;
+  if (!isPro && err.status === 429) {
+    if (code === "QUOTA_EXCEEDED") return { kind: "quota_exceeded" };
+    if (code === "ACTIVATION_PENDING") {
+      const retry = err.payload?.details?.retry_after_ms;
+      return { kind: "activation_pending", retryAfterMs: typeof retry === "number" ? retry : null };
+    }
+  }
+  return { kind: "error", message: err.payload?.message || err.message || null };
+}
