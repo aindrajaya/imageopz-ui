@@ -1,16 +1,4 @@
-export type JobStatusEnum = "pending" | "processing" | "done" | "failed";
-
-export interface OptimizationResultResponse {
-  job_id: string;
-  filename: string;
-  status?: JobStatusEnum;
-}
-
-export interface BulkOptimizeResponse {
-  success?: boolean;
-  results: OptimizationResultResponse[];
-  message: string;
-}
+export type JobStatusEnum = "uploading" | "pending" | "processing" | "done" | "failed" | "rejected";
 
 export interface ErrorResponse {
   success?: boolean;
@@ -30,6 +18,7 @@ export interface JobStatusResponse {
   progress?: number | null;
   progress_status?: string | null;
   error_message?: string | null;
+  rejection_reason?: string | null;
   created_at: string;
   expiry_date: string;
 }
@@ -85,7 +74,7 @@ export interface SessionMeResponse {
   pro_credits_remaining: number;
 }
 
-function getApiBaseUrl() {
+export function getApiBaseUrl() {
   const isDev = Boolean(import.meta.env.DEV);
   const useProxyInDev = (import.meta.env.VITE_IMAGEOPZ_USE_VITE_PROXY as unknown as string | undefined) === "true";
   // Use direct property access so Vite can statically replace it at build time.
@@ -107,7 +96,7 @@ function getApiBaseUrl() {
   return "";
 }
 
-async function readJson<T>(response: Response): Promise<T> {
+export async function readJson<T>(response: Response): Promise<T> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
     throw new Error(`Expected JSON response, got ${contentType || "unknown"}`);
@@ -115,7 +104,7 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function tryReadError(response: Response): Promise<ErrorResponse | null> {
+export async function tryReadError(response: Response): Promise<ErrorResponse | null> {
   try {
     const data = await readJson<unknown>(response);
     if (
@@ -134,13 +123,13 @@ async function tryReadError(response: Response): Promise<ErrorResponse | null> {
   }
 }
 
-function shouldSendCookies() {
+export function shouldSendCookies() {
   const raw = import.meta.env.VITE_IMAGEOPZ_SEND_COOKIES as unknown as string | undefined;
   if (!raw) return true;
   return raw === "true";
 }
 
-function buildAuthHeaders(params?: { sessionId?: string | null; accessToken?: string | null; json?: boolean }) {
+export function buildAuthHeaders(params?: { sessionId?: string | null; accessToken?: string | null; json?: boolean }) {
   const headers: Record<string, string> = {};
   if (params?.json) headers["content-type"] = "application/json";
   if (params?.sessionId) headers["X-Session-Id"] = params.sessionId;
@@ -158,40 +147,6 @@ export class ImageOpzApiError extends Error {
     this.status = status;
     this.payload = payload;
   }
-}
-
-export async function optimizeImages(params: {
-  images: File[];
-  sessionId?: string | null;
-  accessToken?: string | null;
-}): Promise<BulkOptimizeResponse> {
-  const apiBaseUrl = getApiBaseUrl();
-  if (import.meta.env.DEV && (!apiBaseUrl || apiBaseUrl.trim().length === 0)) {
-    console.warn("[imageopz] API base URL is empty; requests will go to same-origin.");
-  }
-  const form = new FormData();
-  for (const image of params.images) form.append("images", image);
-  // Backend supports session id via header/cookie; keep a form-field fallback for older clients.
-  if (params.sessionId) form.append("session_id", params.sessionId);
-
-  const response = await fetch(`${apiBaseUrl}/api/v1/optimize`, {
-    method: "POST",
-    headers: buildAuthHeaders({ sessionId: params.sessionId, accessToken: params.accessToken }),
-    credentials: shouldSendCookies() ? "include" : "omit",
-    body: form,
-  });
-
-  if (!response.ok) {
-    const payload = await tryReadError(response);
-    throw new ImageOpzApiError(
-      payload?.message || `Optimize request failed (${response.status})`,
-      response.status,
-      payload
-    );
-  }
-
-  // Spec: 202 w/ BulkOptimizeResponse
-  return await readJson<BulkOptimizeResponse>(response);
 }
 
 export async function getJobStatus(jobId: string, params?: { sessionId?: string | null }): Promise<JobStatusResponse> {

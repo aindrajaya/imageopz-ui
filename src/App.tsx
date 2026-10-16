@@ -26,7 +26,6 @@ import { useAuth } from "@/context/AuthContext";
 import { AuthCallback } from "@/components/auth/AuthCallback";
 import { MyResultsPage } from "@/components/results/MyResults";
 import {
-  optimizeImages,
   getJobStatus,
   createLemonSqueezyCheckout,
   getSessionMe,
@@ -37,6 +36,16 @@ import {
   type SessionMeResponse,
 } from "@/lib/imageopzApi";
 import { saveResultBatch } from "@/lib/resultsStore";
+import {
+  uploadBatch,
+  describeFailure,
+  describeRejection,
+  type UploadItem,
+} from "@/lib/uploads";
+import { ACCEPTED_IMAGE_TYPES, FREE_LIMITS, PRO_LIMITS, isAcceptedImage, maxMegabytes, tierLimits } from "@/lib/uploadLimits";
+
+const FREE_MB = maxMegabytes(false);
+const PRO_MB = maxMegabytes(true);
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -79,7 +88,7 @@ const translations = {
     socialProof: "Before vs After",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Image",
-    supportFormat: "Support for JPEG, PNG, WEBP up to 10MB (Free) / 25MB (Pro) per file.",
+    supportFormat: `Support for JPEG, PNG, WEBP up to ${FREE_MB}MB (Free) / ${PRO_MB}MB (Pro) per file.`,
     crunching: "Crunching pixels...",
     applying: "Applying advanced WebP/AVIF compression.",
     progressStages: [
@@ -111,7 +120,7 @@ const translations = {
     howItWorks: "How it Works",
     howItWorksSub: "A brutally simple pipeline designed to solve one problem: bloated AI-generated images ruining your website's performance.",
     step1Title: "Drop & Validate",
-    step1Desc: "Client-side validation ensures you only send valid images. 10MB (Free) / 25MB (Pro) limit keeps our Edge network fast and responsive without arbitrary bloat.",
+    step1Desc: `Client-side validation ensures you only send valid images. ${FREE_MB}MB (Free) / ${PRO_MB}MB (Pro) limit keeps our Edge network fast and responsive without arbitrary bloat.`,
     step2Title: "Edge Processing",
     step2Desc: "Next.js Edge functions validate and rate-limit, passing your image to our dedicated Vultr instance powered by highly tuned Python compression algorithms.",
     step3Title: "Deliver & Wipe",
@@ -138,6 +147,21 @@ const translations = {
     confirmPaymentTitle: "Confirm Purchase",
     confirmPaymentDesc: "Are you sure you want to purchase 100 credits for $9.99?",
     confirm: "Confirm",
+    uploadingFiles: "Uploading {n} file(s)...",
+    cancelUpload: "Cancel upload",
+    uploadCancelled: "Upload cancelled",
+    nothingAccepted: "None of the files could be processed.",
+    notProcessed: "Not processed",
+    startOver: "Start over",
+    fileStates: {
+      queued: "queued",
+      uploading: "uploading",
+      uploaded: "uploaded",
+      processing: "processing",
+      done: "done",
+      rejected: "rejected",
+      failed: "failed",
+    },
     cancel: "Cancel",
     feedbackTitle: "Found a bug? Have an idea?",
     feedbackSub: "Tell me directly. I read every message!",
@@ -165,7 +189,7 @@ const translations = {
     socialProof: "Sebelum vs Sesudah",
     socialProofExample: "1.2MB → 140KB",
     dropYourImage: "Upload Gambar",
-    supportFormat: "Mendukung JPEG, PNG, WEBP (Max. 10MB Gratis / 25MB Pro)",
+    supportFormat: `Mendukung JPEG, PNG, WEBP (Max. ${FREE_MB}MB Gratis / ${PRO_MB}MB Pro)`,
     crunching: "Memproses gambar...",
     applying: "Melakukan kompresi super cepat ke format Next-Gen.",
     progressStages: [
@@ -197,7 +221,7 @@ const translations = {
     howItWorks: "Cara Kerja",
     howItWorksSub: "Alur sederhana yang dirancang untuk mengatasi gambar AI berukuran raksasa yang memperlambat website Anda.",
     step1Title: "Validasi Loka",
-    step1Desc: "Validasi sisi klien memastikan hanya gambar valid yang diproses. Batas 10MB (Gratis) / 25MB (Pro) menjaga jaringan Edge tetap responsif.",
+    step1Desc: `Validasi sisi klien memastikan hanya gambar valid yang diproses. Batas ${FREE_MB}MB (Gratis) / ${PRO_MB}MB (Pro) menjaga jaringan Edge tetap responsif.`,
     step2Title: "Pemrosesan Edge",
     step2Desc: "Fungsi Edge memvalidasi dan membatasi traffic, lalu mengirimkan gambar Anda ke engine kompresi cerdas kami.",
     step3Title: "Kirim & Hapus",
@@ -224,6 +248,21 @@ const translations = {
     confirmPaymentTitle: "Konfirmasi Pembelian",
     confirmPaymentDesc: "Apakah Anda yakin ingin membeli 100 kredit seharga $9.99?",
     confirm: "Konfirmasi",
+    uploadingFiles: "Mengunggah {n} file...",
+    cancelUpload: "Batalkan unggahan",
+    uploadCancelled: "Unggahan dibatalkan",
+    nothingAccepted: "Tidak ada file yang dapat diproses.",
+    notProcessed: "Tidak diproses",
+    startOver: "Mulai lagi",
+    fileStates: {
+      queued: "antre",
+      uploading: "mengunggah",
+      uploaded: "terunggah",
+      processing: "diproses",
+      done: "selesai",
+      rejected: "ditolak",
+      failed: "gagal",
+    },
     cancel: "Batal",
     feedbackTitle: "Ada bug? Punya ide fitur?",
     feedbackSub: "Beritahu saya langsung!",
@@ -294,6 +333,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [progress, setProgress] = useState(0);
   const [jobOrder, setJobOrder] = useState<string[]>([]);
   const [jobStatuses, setJobStatuses] = useState<Record<string, JobStatusResponse>>({});
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const jobStatusesRef = useRef<Record<string, JobStatusResponse>>({});
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -582,7 +624,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     } catch {
       // ignore
     }
-    const maxMb = isPro ? 25 : 10;
+    const maxMb = maxMegabytes(isPro);
     if (fileRejections.length > 0) {
       const rejection = fileRejections[0];
       if (rejection.errors[0]?.code === "file-too-large") {
@@ -594,11 +636,11 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           description: lang === "en" ? "Only JPEG, PNG, and WEBP are supported." : "Hanya format JPEG, PNG, dan WEBP yang didukung."
         });
       } else if (rejection.errors[0]?.code === "too-many-files") {
-        const maxAllowed = isPro ? 30 : Math.min(3, quota);
+        const maxAllowed = isPro ? PRO_LIMITS.maxFiles : Math.min(FREE_LIMITS.maxFiles, quota);
         toast.error(lang === "en" ? `Max ${maxAllowed} files allowed` : `Maksimal ${maxAllowed} file`, {
           description: lang === "en"
-            ? (isPro ? "Pro version accepts up to 30 files at a time." : "Free version accepts up to 3 files at a time.")
-            : (isPro ? "Versi Pro menerima maksimal 30 file." : "Versi gratis menerima maksimal 3 file.")
+            ? (isPro ? `Pro version accepts up to ${PRO_LIMITS.maxFiles} files at a time.` : `Free version accepts up to ${FREE_LIMITS.maxFiles} files at a time.`)
+            : (isPro ? `Versi Pro menerima maksimal ${PRO_LIMITS.maxFiles} file.` : `Versi gratis menerima maksimal ${FREE_LIMITS.maxFiles} file.`)
         });
       } else {
         toast.error(lang === "en" ? "Error uploading file" : "Gagal mengunggah file");
@@ -613,14 +655,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       return;
     }
 
-    const maxAllowed = isPro ? 30 : Math.min(3, quota);
+    const maxAllowed = isPro ? PRO_LIMITS.maxFiles : Math.min(FREE_LIMITS.maxFiles, quota);
 
-    const maxBytes = isPro ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
-    let validFiles = acceptedFiles.filter(f => {
-      const isValidType = ["image/jpeg", "image/png", "image/webp"].includes(f.type);
-      const isValidSize = f.size <= maxBytes;
-      return isValidType && isValidSize;
-    });
+    let validFiles = acceptedFiles.filter(f => isAcceptedImage(f, isPro));
 
     if (validFiles.length < acceptedFiles.length) {
       toast.error(lang === "en" ? "Some files skipped" : "Beberapa file dilewati", {
@@ -633,8 +670,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     if (validFiles.length > maxAllowed) {
       toast.error(lang === "en" ? `Max ${maxAllowed} files allowed` : `Maksimal ${maxAllowed} file`, {
         description: lang === "en"
-          ? (isPro ? "Pro version accepts up to 30 files at a time." : "Free version accepts up to 3 files at a time.")
-          : (isPro ? "Versi Pro menerima maksimal 30 file." : "Versi gratis menerima maksimal 3 file.")
+          ? (isPro ? `Pro version accepts up to ${PRO_LIMITS.maxFiles} files at a time.` : `Free version accepts up to ${FREE_LIMITS.maxFiles} files at a time.`)
+          : (isPro ? `Versi Pro menerima maksimal ${PRO_LIMITS.maxFiles} file.` : `Versi gratis menerima maksimal ${FREE_LIMITS.maxFiles} file.`)
       });
       validFiles = validFiles.slice(0, maxAllowed);
     }
@@ -710,9 +747,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { "image/jpeg": [], "image/png": [], "image/webp": [] } as any,
-    maxSize: (isPro ? 25 : 10) * 1024 * 1024,
-    maxFiles: isPro ? 30 : Math.min(3, Math.max(0, quota)),
+    accept: ACCEPTED_IMAGE_TYPES,
+    maxSize: tierLimits(isPro).maxBytes,
+    maxFiles: isPro ? PRO_LIMITS.maxFiles : Math.min(FREE_LIMITS.maxFiles, Math.max(0, quota)),
     multiple: true
   } as any);
 
@@ -739,6 +776,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     return () => {
       stopPolling();
       stopActivationPolling();
+      uploadAbortRef.current?.abort("reset");
     };
   }, [stopPolling, stopActivationPolling]);
 
@@ -810,6 +848,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setJobOrder([]);
     setJobStatuses({});
     jobStatusesRef.current = {};
+    setUploadItems([]);
     pollStartedAtRef.current = Date.now();
     lastProgressSigRef.current = "";
     lastProgressChangeAtRef.current = Date.now();
@@ -829,13 +868,46 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       } catch {
         // ignore
       }
-      const queued = await optimizeImages({ images: files, sessionId, accessToken: accountClaimed ? accessToken : null });
+      const controller = new AbortController();
+      uploadAbortRef.current = controller;
+      setUploadItems(files.map((f, index) => ({
+        index, name: f.name, size: f.size, loaded: 0, state: "queued", jobId: null, reason: null, failure: null,
+      })));
+      setUploading(true);
+      let batch;
+      try {
+        batch = await uploadBatch(files, {
+          identity: { sessionId, accessToken: accountClaimed ? accessToken : null },
+          signal: controller.signal,
+          onItem: (item) => setUploadItems((prev) => prev.map((p) => (p.index === item.index ? item : p))),
+          onProgress: (p) => setProgress(p.percent),
+        });
+      } finally {
+        setUploading(false);
+        if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      }
+      if (batch.aborted) {
+        // A reset or unmount already moved the UI on; only the Cancel button returns to the preview.
+        if (controller.signal.reason === "reset") return;
+        setAppState("preview");
+        setProgress(0);
+        toast.info(t.uploadCancelled);
+        return;
+      }
+      setProgress(0);
       posthog?.capture('optimization_started', {
         file_count: files.length,
+        accepted_count: batch.acceptedJobIds.length,
         total_size_bytes: files.reduce((acc, f) => acc + f.size, 0),
         is_pro: isPro,
       });
-      const order = queued.results.map(r => r.job_id);
+      const order = batch.acceptedJobIds;
+      if (order.length === 0) {
+        // Nothing to poll: keep the per-file reasons on screen with a way back.
+        refreshSessionMe({ force: true }).catch(() => {});
+        toast.error(t.nothingAccepted);
+        return;
+      }
       setJobOrder(order);
       pendingJobIdsRef.current = new Set(order);
       pollCursorRef.current = 0;
@@ -872,7 +944,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           jobStatusesRef.current = nextMap;
           setJobStatuses(nextMap);
           for (const s of fresh) {
-            if (s.status === "done" || s.status === "failed") pendingJobIdsRef.current.delete(s.job_id);
+            if (s.status === "done" || s.status === "failed" || s.status === "rejected") pendingJobIdsRef.current.delete(s.job_id);
           }
         }
 
@@ -900,7 +972,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
 
         const progressValues = allKnown.map(s => {
           if (typeof s.progress === "number") return Math.max(0, Math.min(100, s.progress));
-          if (s.status === "done" || s.status === "failed") return 100;
+          if (s.status === "done" || s.status === "failed" || s.status === "rejected") return 100;
           if (s.status === "processing") return 50;
           return 5;
         });
@@ -1051,6 +1123,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   };
 
   const handleReset = () => {
+    uploadAbortRef.current?.abort("reset");
     stopPolling();
     setAppState("idle");
     setFiles([]);
@@ -1060,7 +1133,39 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     setJobOrder([]);
     setJobStatuses({});
     jobStatusesRef.current = {};
+    setUploadItems([]);
   };
+
+  const cancelUpload = () => {
+    uploadAbortRef.current?.abort();
+  };
+
+  // Per-file label: upload state until /complete accepts the job, then the polled job status.
+  const describeItem = (item: UploadItem): { label: string; detail: string | null } => {
+    const s = item.jobId ? jobStatuses[item.jobId] : undefined;
+    if (s && (item.state === "processing" || item.state === "done" || item.state === "failed") && !item.failure) {
+      if (s.status === "done") return { label: t.fileStates.done, detail: null };
+      if (s.status === "failed") return { label: t.fileStates.failed, detail: s.error_message ?? null };
+      if (s.status === "rejected") return { label: t.fileStates.rejected, detail: describeRejection(s.rejection_reason, lang) };
+      return {
+        label: t.fileStates.processing + (typeof s.progress === "number" ? ` (${Math.round(s.progress)}%)` : ""),
+        detail: null,
+      };
+    }
+    if (item.state === "uploading") {
+      const pct = item.size > 0 ? Math.round((item.loaded / item.size) * 100) : 0;
+      return { label: `${t.fileStates.uploading} (${pct}%)`, detail: null };
+    }
+    if (item.state === "rejected") return { label: t.fileStates.rejected, detail: describeRejection(item.reason, lang) };
+    if (item.state === "failed") return { label: t.fileStates.failed, detail: item.failure ? describeFailure(item.failure, lang) : null };
+    return { label: t.fileStates[item.state], detail: null };
+  };
+
+  const notProcessedItems = uploadItems.filter((item) => {
+    if (item.state === "rejected" || (item.state === "failed" && item.failure)) return true;
+    const s = item.jobId ? jobStatuses[item.jobId] : undefined;
+    return s?.status === "rejected";
+  });
 
   const originalSize = files.reduce((acc, f) => acc + f.size, 0);
   const estimatedMinutes = useMemo(() => {
@@ -1089,11 +1194,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     if (jobOrder.length === 0) return false;
     return jobOrder.every((id) => {
       const s = jobStatuses[id];
-      return s?.status === "done" || s?.status === "failed";
+      return s?.status === "done" || s?.status === "failed" || s?.status === "rejected";
     });
   }, [jobOrder, jobStatuses]);
 
   const getProgressStage = () => {
+    if (uploading) return t.uploadingFiles.replace("{n}", String(files.length));
     const statuses = jobOrder.map(id => jobStatuses[id]).filter(Boolean);
     const latest = statuses.find(s => s?.progress_status)?.progress_status;
     if (latest) return latest;
@@ -1734,24 +1840,33 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   </div>
                 )}
 
-                {/* Debug-friendly per-job status */}
-                {jobOrder.length > 0 && (
+                {uploading && (
+                  <Button variant="outline" onClick={cancelUpload} className="gap-2">
+                    <X className="w-4 h-4" /> {t.cancelUpload}
+                  </Button>
+                )}
+
+                {uploadItems.length > 0 && (
                   <div className="text-left max-w-xl mx-auto space-y-2 text-xs text-muted-foreground">
-                    {jobOrder.map((id) => {
-                      const s = jobStatuses[id];
-                      if (!s) return (
-                        <div key={id} className="flex justify-between">
-                          <span className="font-mono truncate max-w-[70%]">{id}</span>
-                          <span>loading…</span>
-                        </div>
-                      );
+                    {uploadItems.map((item) => {
+                      const { label, detail } = describeItem(item);
                       return (
-                        <div key={id} className="flex justify-between gap-3">
-                          <span className="font-mono truncate max-w-[70%]">{s.original_filename}</span>
-                          <span>{s.status}{typeof s.progress === "number" ? ` (${Math.round(s.progress)}%)` : ""}</span>
+                        <div key={item.index} className="space-y-0.5">
+                          <div className="flex justify-between gap-3">
+                            <span className="font-mono truncate max-w-[70%]">{item.name}</span>
+                            <span>{label}</span>
+                          </div>
+                          {detail && <div className="text-destructive">{detail}</div>}
                         </div>
                       );
                     })}
+                  </div>
+                )}
+
+                {!uploading && uploadItems.length > 0 && jobOrder.length === 0 && (
+                  <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground">{t.nothingAccepted}</p>
+                    <Button onClick={handleReset}>{t.startOver}</Button>
                   </div>
                 )}
               </motion.div>
@@ -1805,6 +1920,21 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                     </CardContent>
                   </Card>
                 </div>
+
+                {notProcessedItems.length > 0 && (
+                  <div className="max-w-lg mx-auto space-y-2 text-sm">
+                    <p className="font-medium">{t.notProcessed}</p>
+                    {notProcessedItems.map((item) => {
+                      const { detail } = describeItem(item);
+                      return (
+                        <div key={item.index} className="flex justify-between gap-3 text-muted-foreground">
+                          <span className="font-mono truncate max-w-[50%]">{item.name}</span>
+                          <span className="text-right">{detail}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center pt-8 border-t border-border">
                   {aggregated.statuses.filter(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0).length <= 1 ? (
