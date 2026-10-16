@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { aggregateProgress, parseUtc, uploadBatch, type UploadItem, type UploadProgress } from "./uploads";
+import { aggregateProgress, classifyStartError, parseUtc, uploadBatch, type UploadItem, type UploadProgress } from "./uploads";
+import { ImageOpzApiError } from "./imageopzApi";
 import { FREE_LIMITS, PRO_LIMITS, isAcceptedImage } from "./uploadLimits";
 
 const API = "https://api.test";
@@ -449,5 +450,41 @@ describe("limits", () => {
     expect(isAcceptedImage(f("a.jpg", 30 * 1024 * 1024), false)).toBe(false);
     expect(isAcceptedImage(f("a.jpg", 50 * 1024 * 1024), true)).toBe(true);
     expect(isAcceptedImage(f("a.jpg", 50 * 1024 * 1024 + 1), true)).toBe(false);
+  });
+});
+
+describe("classifyStartError", () => {
+  const apiError = (status: number, error: string, details: Record<string, unknown> | null = null) =>
+    new ImageOpzApiError(error, status, { success: false, error, message: `${error} message`, details } as never);
+
+  it("sends a free user out of credits to the upgrade prompt", () => {
+    expect(classifyStartError(apiError(429, "QUOTA_EXCEEDED"), false)).toEqual({ kind: "quota_exceeded" });
+  });
+
+  it("keeps ACTIVATION_PENDING on the activation bridge with retry_after_ms", () => {
+    expect(classifyStartError(apiError(429, "ACTIVATION_PENDING", { retry_after_ms: 1500 }), false)).toEqual({
+      kind: "activation_pending",
+      retryAfterMs: 1500,
+    });
+    expect(classifyStartError(apiError(429, "ACTIVATION_PENDING"), false)).toEqual({
+      kind: "activation_pending",
+      retryAfterMs: null,
+    });
+  });
+
+  it("shows the server message for other errors, Pro quota errors and unknown 429s", () => {
+    expect(classifyStartError(apiError(429, "QUOTA_EXCEEDED"), true)).toEqual({
+      kind: "error",
+      message: "QUOTA_EXCEEDED message",
+    });
+    expect(classifyStartError(apiError(429, "RATE_LIMITED"), false)).toEqual({
+      kind: "error",
+      message: "RATE_LIMITED message",
+    });
+    expect(classifyStartError(apiError(503, "UPLOADS_UNAVAILABLE"), false)).toEqual({
+      kind: "error",
+      message: "UPLOADS_UNAVAILABLE message",
+    });
+    expect(classifyStartError(new TypeError("Failed to fetch"), false)).toEqual({ kind: "error", message: null });
   });
 });
