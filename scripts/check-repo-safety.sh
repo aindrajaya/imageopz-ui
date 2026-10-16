@@ -20,7 +20,7 @@ done < <(git ls-files)
 
 # 3. Obfuscation markers and remote-code loaders in tracked code files.
 # Code files only: docs that describe these patterns are not executable.
-code_files() { git ls-files -z -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.html' '*.sh' ':!scripts/check-repo-safety.sh'; }
+code_files() { git ls-files -z -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.html' '*.svg' '*.sh' ':!scripts/check-repo-safety.sh'; }
 while IFS= read -r f; do bad "obfuscation markers in $f"; done < <(code_files | xargs -0 grep -IlE \
   '(\\u00[0-9A-Fa-f]{2}){4,}|global\.[a-z]\s*=\s*require|_0x[0-9a-f]{4,}|eval\(atob' 2>/dev/null)
 # eval( in the same file as atob( or fetch( = download-and-execute

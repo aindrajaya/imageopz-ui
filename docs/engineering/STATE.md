@@ -36,7 +36,7 @@ Frontend for ImageOpz. Cross-repo objective and backend state: imageopz-server d
 
 ## Known debt / follow-ups
 - R2 CORS allows only the production origin and localhost:3000; preview/staging origins must be added before T-008.
-- check-repo-safety.sh marker check scans code files only (T-006c); consider adding `*.svg`.
+- check-repo-safety.sh marker check scans code files incl. .svg only (T-006c); .json/.md not scanned.
 - App.tsx polling: `statuses.some(s => s.status === "done")` can throw on a null status entry.
 - Free-tier 429 QUOTA_EXCEEDED shows "Not activated yet" instead of the paywall.
 - `shadcn` (a CLI) is a runtime dependency and pulls express 5 / MCP SDK into the lockfile; move to devDependencies or drop.

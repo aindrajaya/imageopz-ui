@@ -132,8 +132,7 @@ scripts/check-repo-safety.sh, src/App.tsx, vitest.config.ts (new).
 ### Follow-ups (not in scope)
 - Not verified against real R2 or a backend: live end-to-end belongs to T-008 staging. R2 CORS allows only
   https://imageopz.aindrajaya.my.id and http://localhost:3000; Vercel preview/staging origins need adding or the PUT preflight fails.
-- check-repo-safety.sh: the marker check no longer scans .svg, .json, .md or other non-code files (as specified);
-  SVG can carry script, consider adding `*.svg` (and `*.mts`/`*.cts`) to `code_files`.
+- check-repo-safety.sh: the marker check does not scan .json, .md or other non-code files; consider `*.mts`/`*.cts`.
 - Pre-existing: App.tsx polling `statuses.some(s => s.status === "done")` can throw when a status fetch failed (null entry).
 - Pre-existing: a free-tier 429 QUOTA_EXCEEDED shows "Not activated yet" and starts the activation bridge instead of the paywall.
 - Failed PUTs keep their reserved credit until `complete_by` + sweeper (per this task); calling /complete for them
@@ -149,3 +148,12 @@ git push -u origin feat/direct-r2-uploads
 gh pr create --base main --head feat/direct-r2-uploads --title "feat: direct-to-R2 uploads (presign -> PUT -> complete), 50 MB Pro limit (T-006c)" --body-file docs/engineering/tasks/T-006c-direct-uploads.md
 gh pr checks --watch && gh pr merge --squash --delete-branch
 ```
+
+## Amendment (2026-10-16) - svg in repo-safety code scan
+Change: `*.svg` added to `code_files()` in scripts/check-repo-safety.sh, so both the obfuscation-marker search and
+the eval+atob/fetch check scan SVG (SVG can carry script). Nothing else changed.
+Verification:
+- HEAD: exit 0 (no tracked .svg files today).
+- Read-only replay against 8179d01 (`git grep` / `git cat-file`, no checkout), same detections as before:
+  eval+fetch check FAIL vite.config.ts; vite.config eval check FAIL vite.config.ts; `.env is tracked` FAIL.
+  The 3 decoy font .svg files at 8179d01 are now scanned and contain no markers.
