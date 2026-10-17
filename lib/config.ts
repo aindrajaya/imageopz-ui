@@ -31,10 +31,15 @@ export function readConfig(): AppConfig {
 }
 
 // A message for the config error screen, or null. Production has no dev proxy and the Vercel SPA rewrite answers
-// same-origin /api calls with index.html, so a production build without an API base URL cannot work.
+// same-origin /api calls with index.html, so a production build without an API base URL cannot work; sign-in and
+// Pro restore need Supabase.
 export function getConfigError(config: AppConfig = readConfig()): string | null {
-  if (import.meta.env.PROD && !config.apiBaseUrl) {
-    return "VITE_IMAGEOPZ_API_BASE_URL is not set for this deployment.";
-  }
-  return null;
+  if (!import.meta.env.PROD) return null;
+  const missing = [
+    !config.apiBaseUrl && "VITE_IMAGEOPZ_API_BASE_URL",
+    !config.supabaseUrl && "VITE_SUPABASE_URL",
+    !config.supabaseAnonKey && "VITE_SUPABASE_ANON_KEY",
+  ].filter(Boolean);
+  if (missing.length === 0) return null;
+  return `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set for this deployment.`;
 }

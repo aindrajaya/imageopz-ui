@@ -36,6 +36,7 @@ import {
   type SessionMeResponse,
 } from "@/lib/imageopzApi";
 import { saveResultBatch } from "@/lib/resultsStore";
+import { describeDownloadProblems, openFreshDownloads } from "@/lib/downloads";
 import { getOrCreateSessionId, logoutAndRotateSession, storeSessionId } from "@/lib/session";
 import {
   uploadBatch,
@@ -47,6 +48,7 @@ import {
 import {
   batchProgress,
   fetchStatuses,
+  goneJobStatus,
   isStatusUnavailable,
   isTerminalStatus,
   jobPhase,
@@ -150,6 +152,9 @@ const translations = {
     safeToLeave: "Safe to close this tab",
     outOfCredits: "Out of Free Credits.",
     supportIndie: "Keep your websites blazing fast. Upgrade to optimize more images instantly.",
+    renewTitle: "Renew Pro",
+    renewBody: "Your Pro credits are used up or your Pro access has expired. Buy 100 more credits to keep optimizing.",
+    jobGone: "This file is no longer available.",
     proFeature1: "100 image optimizations",
     proFeature2: "Priority Queue Access",
     proFeature3: "40-day file retention",
@@ -252,6 +257,9 @@ const translations = {
     safeToLeave: "Aman menutup tab ini",
     outOfCredits: "Kehabisan Kuota Gratis.",
     supportIndie: "Dukung alat indie kami dan dapatkan akses tak terbatas.",
+    renewTitle: "Perpanjang Pro",
+    renewBody: "Kredit Pro Anda sudah habis atau akses Pro sudah berakhir. Beli 100 kredit lagi untuk lanjut mengoptimasi.",
+    jobGone: "File ini sudah tidak tersedia.",
     proFeature1: "100 Credits untuk Optimasi",
     proFeature2: "Prioritas Antrean",
     proFeature3: "Retensi file 40 hari",
@@ -313,6 +321,8 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [forceRestore, setForceRestore] = useState(false);
   const [hideRestoreCta, setHideRestoreCta] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
+  // "renew": a Pro user out of credits or past the Pro expiry (presign 429 QUOTA_EXCEEDED); reset when the dialog closes.
+  const [paywallReason, setPaywallReason] = useState<"credits" | "renew">("credits");
   const [showPaymentConfirm, setShowPaymentConfirm] = useState(false);
   const [checkoutEmail, setCheckoutEmail] = useState("");
   const [isCreatingCheckout, setIsCreatingCheckout] = useState(false);
@@ -906,7 +916,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         const { picks, cursor } = pickDueJobs(pending, health, Date.now(), MAX_STATUS_CHECKS_PER_TICK, pollCursorRef.current);
         pollCursorRef.current = cursor;
 
-        const { fresh, rateLimited: saw429 } = await fetchStatuses(
+        const { fresh, rateLimited: saw429, gone } = await fetchStatuses(
           picks,
           (id) => getJobStatus(id, { sessionId }),
           health,
@@ -914,12 +924,17 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
         );
         if (health !== jobHealthRef.current) return; // a new batch or reset started meanwhile
 
-        if (fresh.length > 0) {
+        // Repeated 404s: the job is gone (deleted, cleaned up, not this session's), so stop polling it.
+        const finished = [
+          ...fresh,
+          ...gone.map((id) => goneJobStatus(id, jobStatusesRef.current[id], t.jobGone)),
+        ];
+        if (finished.length > 0) {
           const nextMap = { ...jobStatusesRef.current };
-          for (const s of fresh) nextMap[s.job_id] = s;
+          for (const s of finished) nextMap[s.job_id] = s;
           jobStatusesRef.current = nextMap;
           setJobStatuses(nextMap);
-          for (const s of fresh) {
+          for (const s of finished) {
             if (isTerminalStatus(s.status)) pendingJobIdsRef.current.delete(s.job_id);
           }
         }
@@ -939,10 +954,10 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           pollBackoffMsRef.current = Math.max(0, Math.round(pollBackoffMsRef.current * 0.6));
         }
 
-        // Detect lack of progress / stuck jobs
+        // Detect lack of progress / stuck jobs. Not the download URL: /status signs a new one on every poll.
         const allKnown = order.map(id => jobStatusesRef.current[id]).filter(Boolean) as JobStatusResponse[];
         const sig = allKnown
-          .map(s => `${s.job_id}:${s.status}:${s.r2_url ?? ""}`)
+          .map(s => `${s.job_id}:${s.status}`)
           .sort()
           .join("|");
         if (sig !== lastProgressSigRef.current) {
@@ -971,7 +986,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
           } catch {}
           setAppState("result");
           try {
-            const done = allKnown.filter((s) => s.status === "done" && typeof s.r2_url === "string" && s.r2_url);
+            const done = allKnown.filter((s) => s.status === "done");
             if (done.length > 0) {
               const createdAt = new Date().toISOString();
               const expiryCandidates = done.map((s) => s.expiry_date).filter(Boolean).sort();
@@ -985,7 +1000,6 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 items: done.map((s) => ({
                   job_id: s.job_id,
                   filename: s.original_filename,
-                  url: s.r2_url as string,
                   created_at: s.created_at,
                   expiry_date: s.expiry_date,
                   original_size: s.original_size,
@@ -1054,6 +1068,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       const action = classifyStartError(err, isPro);
       if (action.kind === "quota_exceeded") {
         // Free credits or batch size used up: show the upgrade prompt; the refresh syncs the credit count.
+        setShowPaywall(true);
+        refreshSessionMe({ force: true }).catch(() => {});
+        return;
+      }
+      if (action.kind === "renew_pro") {
+        setPaywallReason("renew");
         setShowPaywall(true);
         refreshSessionMe({ force: true }).catch(() => {});
         return;
@@ -1147,10 +1167,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     return { statuses, totalOriginal, totalOptimized, anyOptimized, savingsPct };
   }, [jobOrder, jobStatuses]);
 
-  const hasDownloadableResults = useMemo(
-    () => aggregated.statuses.some((s) => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0),
+  // Download links come from a fresh /status call on click (lib/downloads.ts), so "done" is enough here.
+  const downloadableJobs = useMemo(
+    () => aggregated.statuses.filter((s) => s.status === "done"),
     [aggregated.statuses]
   );
+  const hasDownloadableResults = downloadableJobs.length > 0;
 
   const processingFinished = useMemo(() => {
     if (jobOrder.length === 0) return false;
@@ -1189,10 +1211,12 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
     }
   };
 
-  const handleDownloadUrl = useCallback((url: string) => {
+  const handleDownload = useCallback(async (jobIds: string[]) => {
     posthog?.capture('image_downloaded', { is_pro: isPro });
-    window.open(url, "_blank", "noopener,noreferrer");
-  }, [posthog, isPro]);
+    const outcome = await openFreshDownloads(jobIds, (id) => getJobStatus(id, { sessionId }));
+    const problem = describeDownloadProblems(outcome, lang);
+    if (problem) toast.error(lang === "en" ? "Download unavailable" : "Unduhan tidak tersedia", { description: problem });
+  }, [posthog, isPro, sessionId, lang]);
 
   const handleLogout = useCallback(() => {
     // Best-effort "logout": clear local identity markers, end the server session and rotate the session id (lib/session.ts).
@@ -1902,31 +1926,27 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                 )}
 
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center pt-8 border-t border-border">
-                  {aggregated.statuses.filter(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0).length <= 1 ? (
+                  {downloadableJobs.length <= 1 ? (
                     <button
                       onClick={() => {
-                        const url =
-                          aggregated.statuses.find(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)?.r2_url ?? null;
-                        if (url) handleDownloadUrl(url);
+                        if (downloadableJobs[0]) void handleDownload([downloadableJobs[0].job_id]);
                       }}
-                      disabled={!aggregated.statuses.some(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)}
+                      disabled={!hasDownloadableResults}
                       className="rounded-full w-full sm:w-auto px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
                     >
                       <Download className="w-4 h-4" /> {t.downloadImage}
                     </button>
                   ) : (
                     <div className="w-full sm:w-auto flex flex-col gap-2">
-                      {aggregated.statuses
-                        .filter(s => s.status === "done" && typeof s.r2_url === "string" && s.r2_url.length > 0)
-                        .map(s => (
-                          <button
-                            key={s.job_id}
-                            onClick={() => handleDownloadUrl(s.r2_url as string)}
-                            className="rounded-full w-full px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2"
-                          >
-                            <Download className="w-4 h-4" /> {t.downloadImage} ({s.original_filename})
-                          </button>
-                        ))}
+                      {downloadableJobs.map(s => (
+                        <button
+                          key={s.job_id}
+                          onClick={() => void handleDownload([s.job_id])}
+                          className="rounded-full w-full px-8 py-3 bg-accent text-accent-foreground font-bold hover:bg-accent/90 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <Download className="w-4 h-4" /> {t.downloadImage} ({s.original_filename})
+                        </button>
+                      ))}
                     </div>
                   )}
                   <button onClick={() => navigate(lang === "id" ? "/id/my-results" : "/my-results")} className="rounded-full w-full sm:w-auto px-8 py-3 bg-secondary text-secondary-foreground font-bold hover:bg-secondary/80 transition-colors flex items-center justify-center gap-2">
@@ -2032,7 +2052,13 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       </footer>
 
       {/* Paywall Modal */}
-      <Dialog open={showPaywall} onOpenChange={setShowPaywall}>
+      <Dialog
+        open={showPaywall}
+        onOpenChange={(open) => {
+          setShowPaywall(open);
+          if (!open) setPaywallReason("credits");
+        }}
+      >
         <DialogContent className="p-0 overflow-hidden border-none bg-transparent shadow-2xl sm:max-w-md">
           <Card className="w-full border-none rounded-xl">
             <div className="bg-foreground px-6 py-10 text-background text-center relative overflow-hidden">
@@ -2041,9 +2067,9 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   <Badge variant="outline" className="text-background border-background/20 font-medium">
                     {t.proPlan}
                   </Badge>
-                  <h2 className="text-3xl font-bold tracking-tight">{t.outOfCredits}</h2>
+                  <h2 className="text-3xl font-bold tracking-tight">{paywallReason === "renew" ? t.renewTitle : t.outOfCredits}</h2>
                   <p className="text-background/80 font-medium max-w-xs mx-auto">
-                    {t.supportIndie}
+                    {paywallReason === "renew" ? t.renewBody : t.supportIndie}
                   </p>
                </div>
             </div>

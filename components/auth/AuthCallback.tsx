@@ -13,6 +13,7 @@ function sleep(ms: number) {
 async function getSupabaseAccessTokenWithRetry(opts?: { maxWaitMs?: number; intervalMs?: number }) {
   const maxWaitMs = typeof opts?.maxWaitMs === "number" ? opts.maxWaitMs : 2_000;
   const intervalMs = typeof opts?.intervalMs === "number" ? opts.intervalMs : 100;
+  if (!supabase) return null;
   const startedAt = Date.now();
   while (Date.now() - startedAt <= maxWaitMs) {
     const { data } = await supabase.auth.getSession();
@@ -32,6 +33,11 @@ export function AuthCallback() {
     // React StrictMode in dev may run effects twice; protect against double-restore.
     if (ranOnceRef.current) return;
     ranOnceRef.current = true;
+    const client = supabase;
+    if (!client) {
+      navigate("/", { replace: true });
+      return;
+    }
 
     (async () => {
       let didNavigate = false;
@@ -47,13 +53,13 @@ export function AuthCallback() {
           const url = new URL(window.location.href);
           const code = url.searchParams.get("code");
           if (code) {
-            await supabase.auth.exchangeCodeForSession(window.location.href);
+            await client.auth.exchangeCodeForSession(window.location.href);
           } else if (window.location.hash) {
             const params = new URLSearchParams(window.location.hash.slice(1));
             const at = params.get("access_token");
             const rt = params.get("refresh_token");
             if (at && rt) {
-              await supabase.auth.setSession({ access_token: at, refresh_token: rt });
+              await client.auth.setSession({ access_token: at, refresh_token: rt });
             }
           }
         } catch {
@@ -146,7 +152,7 @@ export function AuthCallback() {
          }
 
          if (tokenToUse) {
-           const session = await supabase.auth.getSession();
+           const session = await client.auth.getSession();
           const userEmail = session.data.session?.user?.email;
           if (userEmail) {
             posthog.identify(userEmail, { email: userEmail });

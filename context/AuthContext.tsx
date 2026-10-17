@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { supabase, supabaseEnabled } from "@/lib/supabaseClient";
+import { supabase } from "@/lib/supabaseClient";
 import { readConfig } from "@/lib/config";
 import posthog from 'posthog-js';
 
@@ -22,16 +22,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
 
   useEffect(() => {
+    // Unconfigured (dev only; production shows the config screen): signed out, nothing to listen to.
+    if (!supabase) {
+      setLoadingAuth(false);
+      return;
+    }
+    const client = supabase;
     let mounted = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
+      const { data } = await client.auth.getSession();
       if (!mounted) return;
       setSession(data.session ?? null);
       setUser(data.session?.user ?? null);
       setLoadingAuth(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: sub } = client.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       setLoadingAuth(false);
@@ -44,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithMagicLink = useCallback(async (email: string) => {
-    if (!supabaseEnabled) {
+    if (!supabase) {
       throw new Error("Supabase is not configured (missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
     }
     const redirectTo =
@@ -62,6 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (!supabase) return;
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
     posthog.capture('user_signed_out');
