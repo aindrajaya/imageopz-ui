@@ -17,8 +17,8 @@ redeploy to take effect.
 | `VITE_IMAGEOPZ_API_BASE_URL` | prod api run.app URL from T-008c: `https://imageopz-api-prod-<PROJECT_NUMBER>.asia-northeast1.run.app` (no trailing slash). Required: a production build without it shows a "not configured" screen. |
 | `VITE_IMAGEOPZ_SEND_COOKIES` | `false` (header-only sessions; the cross-site run.app API never receives the `SameSite=Lax` cookie) |
 | `VITE_IMAGEOPZ_USE_VITE_PROXY` | unset (dev-server only; ignored in builds) |
-| `VITE_SUPABASE_URL` | prod Supabase project: Project Settings > API > Project URL |
-| `VITE_SUPABASE_ANON_KEY` | prod Supabase project: anon / publishable key (public). Never the service-role key. |
+| `VITE_SUPABASE_URL` | prod Supabase project: Project Settings > API > Project URL. Required, like the API URL. |
+| `VITE_SUPABASE_ANON_KEY` | prod Supabase project: anon / publishable key (public). Never the service-role key. Required. |
 | `VITE_SUPABASE_REDIRECT_URL` | `https://imageopz.aindrajaya.my.id/auth/callback` (must be in the prod project's Auth > URL Configuration > Redirect URLs) |
 | `VITE_PUBLIC_POSTHOG_PROJECT_TOKEN` | prod PostHog project token (public `phc_...`) |
 | `VITE_PUBLIC_POSTHOG_HOST` | the PostHog ingest host of that project (e.g. `https://us.i.posthog.com` or `https://eu.i.posthog.com`) |
@@ -53,6 +53,19 @@ In Vercel these are Preview-environment variables scoped to the `staging` Git br
 bucket CORS rules (DEPLOY-PLAN section 7: never preview URLs, never `*`). API calls and uploads fail with CORS errors
 on previews. That is by design; test end to end on staging.
 
+Production builds (Production, staging and Preview alike) need `VITE_IMAGEOPZ_API_BASE_URL`, `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY`; a build missing any of them shows "ImageOpz is not configured" with the variable names.
+Local dev runs without Supabase (sign-in disabled).
+
+## Downloads (no variable, no asset domain)
+
+Optimized files live in a private R2 bucket. There is no public asset domain, no r2.dev URL and no `VITE_` variable
+for it: `GET /api/v1/status/{job_id}` returns a presigned download link (`r2_url`, valid 15 minutes) to the job's
+owner only. The UI calls `/status` on every download click (result page and My Results) and opens the link it gets
+back (`lib/downloads.ts`); the local history (`lib/resultsStore.ts`) stores job ids only. A download after the file's
+expiry date, after it was cleaned up, or from another session (e.g. after logout) gets no link and shows a message.
+Opening the link is a navigation, so the outputs bucket needs no CORS rule.
+
 ## Local development
 
 Copy `.env.example` to `.env` (never commit it). Typical: `VITE_IMAGEOPZ_API_BASE_URL=http://localhost:8000`,
@@ -71,16 +84,18 @@ other code sets `credentials` or calls `fetch`. The presigned R2 PUT never sends
 After the UI with this change is live in an environment, set the api's `CORS_ALLOW_CREDENTIALS=false` there
 (DEPLOY-PLAN section 5 and 7); before it, logout needed credentials and the flag had to stay true.
 
-## Owner steps (Vercel and Cloudflare; not done by agents)
+## Owner steps (Vercel, Supabase, server; not done by agents)
 
 1. Create the long-lived branch: `git switch main && git pull && git switch -c staging && git push -u origin staging`.
 2. Vercel > Project > Settings > Domains: add `staging.imageopz.aindrajaya.my.id` and assign it to Git branch `staging`.
-3. Cloudflare DNS for `aindrajaya.my.id`: add `CNAME staging.imageopz -> cname.vercel-dns.com` (or the target Vercel
-   shows for the domain) with proxy status **DNS only** (grey cloud), so Vercel can issue the certificate.
+3. DNS: none to do by hand. DNS for `aindrajaya.my.id` is on Vercel (nameservers `ns1.vercel-dns.com`,
+   `ns2.vercel-dns.com`, checked 2026-10-17), so Vercel creates the record and the certificate when the domain is
+   assigned in step 2. No Cloudflare DNS or CNAME step. Check in Vercel > Domains that the domain shows "Valid
+   Configuration".
 4. Vercel > Settings > Environment Variables: enter the Production values; enter the staging values as Preview variables
    scoped to branch `staging`; enter the generic Preview values for all other Preview branches.
 5. Supabase (each project): Auth > URL Configuration: Site URL and Redirect URLs for that environment's origin.
-6. Redeploy each environment after changing variables, then open it: a missing API URL shows "ImageOpz is not
-   configured" instead of the app.
+6. Redeploy each environment after changing variables, then open it: a missing API URL or Supabase setting shows
+   "ImageOpz is not configured" instead of the app.
 7. Server side (DEPLOY-PLAN): `CORS_ALLOW_ORIGINS` staging = `https://staging.imageopz.aindrajaya.my.id`, prod =
    `https://imageopz.aindrajaya.my.id`; R2 uploads bucket CORS for the same origins; then `CORS_ALLOW_CREDENTIALS=false`.

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ImageOpzApiError, type JobStatusResponse } from "./imageopzApi";
 import {
+  STATUS_GONE_AFTER,
   STATUS_UNAVAILABLE_AFTER,
   batchProgress,
+  goneJobStatus,
   fetchStatuses,
   isStatusUnavailable,
   jobPhase,
@@ -141,6 +143,43 @@ describe("fetchStatuses", () => {
     await fetchStatuses(["a"], async () => status("a", "processing"), health, { now, concurrency: 1 });
     expect(isStatusUnavailable(health, "a")).toBe(false);
     expect(health.has("a")).toBe(false);
+  });
+});
+
+describe("permanent 404 (job deleted, cleaned up or not this session's)", () => {
+  const notFound = async () => {
+    throw new ImageOpzApiError("Job a not found", 404, null);
+  };
+
+  it("gives up on a job after N consecutive 404s", async () => {
+    const health: JobHealth = new Map();
+    let now = 0;
+    for (let i = 1; i < STATUS_GONE_AFTER; i++) {
+      const r = await fetchStatuses(["a"], notFound, health, { now, concurrency: 1 });
+      expect(r.gone).toEqual([]);
+      now = health.get("a")!.nextAttemptAt;
+    }
+    const last = await fetchStatuses(["a"], notFound, health, { now, concurrency: 1 });
+    expect(last.gone).toEqual(["a"]);
+    expect(last.fresh).toEqual([]);
+  });
+
+  it("restarts the 404 count after any other outcome", async () => {
+    const health: JobHealth = new Map();
+    for (let i = 1; i < STATUS_GONE_AFTER; i++) await fetchStatuses(["a"], notFound, health, { now: 0, concurrency: 1 });
+    await fetchStatuses(["a"], async () => {
+      throw new ImageOpzApiError("bad gateway", 502, null);
+    }, health, { now: 0, concurrency: 1 });
+    const r = await fetchStatuses(["a"], notFound, health, { now: 0, concurrency: 1 });
+    expect(r.gone).toEqual([]);
+  });
+
+  it("goneJobStatus turns the job into a finished failure that counts toward progress", () => {
+    const before = status("a", "processing");
+    const gone = goneJobStatus("a", before, "no longer available");
+    expect(gone).toMatchObject({ job_id: "a", status: "failed", error_message: "no longer available", original_filename: "a.jpg" });
+    expect(goneJobStatus("b", undefined, "x")).toMatchObject({ job_id: "b", status: "failed", error_message: "x" });
+    expect(batchProgress(["a"], { a: gone }).completed).toBe(1);
   });
 });
 

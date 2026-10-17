@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { clearStoredResults, loadStoredResults, type StoredResultBatch } from "@/lib/resultsStore";
+import { describeDownloadProblems, openFreshDownloads } from "@/lib/downloads";
+import { getJobStatus } from "@/lib/imageopzApi";
+import { getOrCreateSessionId } from "@/lib/session";
 
 function formatWhen(iso: string) {
   const d = new Date(iso);
@@ -12,6 +15,7 @@ function formatWhen(iso: string) {
 
 export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
   const [batches, setBatches] = useState<StoredResultBatch[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setBatches(loadStoredResults());
@@ -21,27 +25,37 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
     return lang === "en"
       ? {
           title: "Recent Results",
-          subtitle: "Results are saved locally in this browser. Links may expire.",
+          subtitle: "Results are saved locally in this browser. Files are available until they expire.",
           signupTitle: "Love the result?",
           signupBody: "Sign up to save your history and get 100 credits.",
           signupCta: "Sign up",
           empty: "No saved results yet.",
           back: "Back to app",
           clear: "Clear saved results",
-          openAll: "Open all links",
+          openAll: "Download all",
+          open: "Download",
         }
       : {
           title: "Hasil Terbaru",
-          subtitle: "Hasil disimpan lokal di browser ini. Link bisa kedaluwarsa.",
+          subtitle: "Hasil disimpan lokal di browser ini. File tersedia sampai kedaluwarsa.",
           signupTitle: "Suka hasilnya?",
           signupBody: "Daftar untuk menyimpan riwayat Anda dan dapatkan 100 kredit.",
           signupCta: "Daftar",
           empty: "Belum ada hasil yang tersimpan.",
           back: "Kembali ke aplikasi",
           clear: "Hapus semua hasil",
-          openAll: "Buka semua link",
+          openAll: "Unduh semua",
+          open: "Unduh",
         };
   }, [lang]);
+
+  // Each click asks /status for a fresh presigned link; history keeps job ids only (lib/downloads.ts).
+  const download = async (jobIds: string[]) => {
+    setNotice(null);
+    const sessionId = getOrCreateSessionId();
+    const outcome = await openFreshDownloads(jobIds, (id) => getJobStatus(id, { sessionId }));
+    setNotice(describeDownloadProblems(outcome, lang));
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -86,6 +100,12 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
           </div>
         </div>
 
+        {notice && (
+          <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+            {notice}
+          </div>
+        )}
+
         {batches.length === 0 ? (
           <div className="rounded-xl border border-border bg-card p-5 sm:p-6 text-sm text-muted-foreground text-center sm:text-left">
             {copy.empty}
@@ -105,9 +125,7 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
                   </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      for (const it of b.items) window.open(it.url, "_blank", "noopener,noreferrer");
-                    }}
+                    onClick={() => void download(b.items.map((it) => it.job_id))}
                     className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors sm:w-auto"
                   >
                     {copy.openAll}
@@ -119,14 +137,13 @@ export function MyResultsPage({ lang }: { lang: "en" | "id" }) {
                     <div key={it.job_id} className="flex flex-col gap-3 p-3 bg-background sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0 space-y-1">
                         <div className="text-sm font-medium break-words">{it.filename}</div>
-                        <div className="text-xs text-muted-foreground break-all sm:truncate">{it.url}</div>
                       </div>
                       <button
                         type="button"
-                        onClick={() => window.open(it.url, "_blank", "noopener,noreferrer")}
+                        onClick={() => void download([it.job_id])}
                         className="inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-semibold rounded-lg border border-border bg-background hover:bg-secondary/40 transition-colors shrink-0 sm:w-auto"
                       >
-                        Open
+                        {copy.open}
                       </button>
                     </div>
                   ))}

@@ -472,10 +472,14 @@ describe("classifyStartError", () => {
     });
   });
 
-  it("shows the server message for other errors, Pro quota errors and unknown 429s", () => {
-    expect(classifyStartError(apiError(429, "QUOTA_EXCEEDED"), true)).toEqual({
+  it("sends a Pro user whose credits ran out or whose Pro expired to the renew prompt", () => {
+    expect(classifyStartError(apiError(429, "QUOTA_EXCEEDED"), true)).toEqual({ kind: "renew_pro" });
+  });
+
+  it("shows the server message for other errors and unknown 429s", () => {
+    expect(classifyStartError(apiError(429, "RATE_LIMITED"), true)).toEqual({
       kind: "error",
-      message: "QUOTA_EXCEEDED message",
+      message: "RATE_LIMITED message",
     });
     expect(classifyStartError(apiError(429, "RATE_LIMITED"), false)).toEqual({
       kind: "error",

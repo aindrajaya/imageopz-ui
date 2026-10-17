@@ -54,11 +54,25 @@ describe("getConfigError", () => {
     expect(getConfigError()).toMatch(/VITE_IMAGEOPZ_API_BASE_URL/);
   });
 
-  it("accepts production with an API base URL", () => {
+  it("accepts production with an API base URL and Supabase settings", () => {
     vi.stubEnv("PROD", true);
     vi.stubEnv("DEV", false);
     vi.stubEnv("VITE_IMAGEOPZ_API_BASE_URL", "https://api.test");
+    vi.stubEnv("VITE_SUPABASE_URL", "https://x.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "anon");
     expect(getConfigError()).toBeNull();
+  });
+
+  it("reports missing Supabase settings in production builds", () => {
+    vi.stubEnv("PROD", true);
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_IMAGEOPZ_API_BASE_URL", "https://api.test");
+    vi.stubEnv("VITE_SUPABASE_URL", "");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "anon");
+    expect(getConfigError()).toMatch(/VITE_SUPABASE_URL/);
+    vi.stubEnv("VITE_SUPABASE_URL", "https://x.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", " ");
+    expect(getConfigError()).toMatch(/VITE_SUPABASE_ANON_KEY/);
   });
 
   it("allows a missing API base URL outside production (dev proxy or same origin)", () => {

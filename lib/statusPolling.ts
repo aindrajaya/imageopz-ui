@@ -7,8 +7,12 @@ export const STATUS_UNAVAILABLE_AFTER = 3;
 const STATUS_RETRY_BASE_MS = 2000;
 const STATUS_RETRY_MAX_MS = 30_000;
 
+// Consecutive 404s after which a job is given up (deleted, cleaned up, or not this session's job).
+export const STATUS_GONE_AFTER = 3;
+
 // Jobs whose last status fetch failed; a job leaves the map on its next successful fetch.
-export type JobHealth = Map<string, { failures: number; nextAttemptAt: number }>;
+// notFound counts consecutive 404s and is present only while the latest failure was a 404.
+export type JobHealth = Map<string, { failures: number; nextAttemptAt: number; notFound?: number }>;
 
 export function statusRetryDelayMs(failures: number): number {
   return Math.min(STATUS_RETRY_MAX_MS, STATUS_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1));
@@ -48,8 +52,9 @@ export async function fetchStatuses(
   fetchStatus: (id: string) => Promise<JobStatusResponse>,
   health: JobHealth,
   options: { now: number; concurrency: number }
-): Promise<{ fresh: JobStatusResponse[]; rateLimited: boolean }> {
+): Promise<{ fresh: JobStatusResponse[]; rateLimited: boolean; gone: string[] }> {
   const fresh: JobStatusResponse[] = [];
+  const gone: string[] = [];
   let rateLimited = false;
   let next = 0;
   const worker = async () => {
@@ -61,13 +66,22 @@ export async function fetchStatuses(
         if (s && typeof s.status === "string") fresh.push(s);
       } catch (e) {
         if (e instanceof ImageOpzApiError && e.status === 429) rateLimited = true;
-        const failures = (health.get(id)?.failures ?? 0) + 1;
-        health.set(id, { failures, nextAttemptAt: options.now + statusRetryDelayMs(failures) });
+        const previous = health.get(id);
+        const failures = (previous?.failures ?? 0) + 1;
+        const entry: { failures: number; nextAttemptAt: number; notFound?: number } = {
+          failures,
+          nextAttemptAt: options.now + statusRetryDelayMs(failures),
+        };
+        if (e instanceof ImageOpzApiError && e.status === 404) {
+          entry.notFound = (previous?.notFound ?? 0) + 1;
+          if (entry.notFound >= STATUS_GONE_AFTER) gone.push(id);
+        }
+        health.set(id, entry);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(options.concurrency, ids.length)) }, worker));
-  return { fresh, rateLimited };
+  return { fresh, rateLimited, gone };
 }
 
 // Runs `tick` now and again after the delay it returns (null ends the loop). A thrown tick is reported
@@ -101,6 +115,21 @@ export function runPollLoop(options: {
     stopped = true;
     if (timer !== null) clearTimeout(timer);
     timer = null;
+  };
+}
+
+// A job given up after repeated 404s, shown as a finished failure so the batch can complete.
+export function goneJobStatus(jobId: string, previous: JobStatusResponse | undefined, message: string): JobStatusResponse {
+  return {
+    original_filename: "",
+    original_size: 0,
+    created_at: "",
+    expiry_date: "",
+    ...previous,
+    job_id: jobId,
+    status: "failed",
+    r2_url: null,
+    error_message: message,
   };
 }
 

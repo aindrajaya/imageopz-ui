@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { readConfig } from "./config";
 
 const { supabaseUrl, supabaseAnonKey } = readConfig();
@@ -18,7 +18,10 @@ if (import.meta.env.DEV) {
   }
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+// null when unconfigured: createClient throws on an empty URL, which at module load would leave a blank page
+// instead of the config error screen (src/main.tsx).
+export const supabase: SupabaseClient | null = supabaseEnabled
+  ? createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     // Persist is ok, but the app controls when to actually *use* the token for backend calls
     // (restore-only / claimed-account mode) to avoid breaking guest flows.
@@ -26,4 +29,5 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     detectSessionInUrl: true,
   },
-});
+    })
+  : null;
