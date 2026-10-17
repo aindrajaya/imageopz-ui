@@ -1,3 +1,5 @@
+import { readConfig } from "./config";
+
 export type JobStatusEnum = "uploading" | "pending" | "processing" | "done" | "failed" | "rejected";
 
 export interface ErrorResponse {
@@ -75,25 +77,27 @@ export interface SessionMeResponse {
 }
 
 export function getApiBaseUrl() {
+  const { apiBaseUrl, useViteProxy } = readConfig();
   const isDev = Boolean(import.meta.env.DEV);
-  const useProxyInDev = (import.meta.env.VITE_IMAGEOPZ_USE_VITE_PROXY as unknown as string | undefined) === "true";
-  // Use direct property access so Vite can statically replace it at build time.
-  const base = import.meta.env.VITE_IMAGEOPZ_API_BASE_URL as unknown as string | undefined;
   if (isDev) {
     const g = globalThis as any;
     if (!g.__imageopzApiBaseLogged) {
       g.__imageopzApiBaseLogged = true;
-      console.log(
-        "[imageopz] API BASE:",
-        useProxyInDev ? "(dev proxy: /api -> backend)" : (typeof base === "string" ? base : String(base))
-      );
+      console.log("[imageopz] API BASE:", useViteProxy ? "(dev proxy: /api -> backend)" : apiBaseUrl);
     }
   }
-  if (isDev && useProxyInDev) return "";
-  if (typeof base === "string" && base.trim().length > 0) {
-    return base.replace(/\/+$/, "");
-  }
-  return "";
+  if (isDev && useViteProxy) return "";
+  return apiBaseUrl;
+}
+
+// The single credentials policy: "omit" when VITE_IMAGEOPZ_SEND_COOKIES is "false", otherwise "include".
+export function apiCredentials(): RequestCredentials {
+  return readConfig().sendCookies ? "include" : "omit";
+}
+
+// Every request to the ImageOpz API goes through here, so none can bypass the credentials policy.
+export function apiFetch(path: string, init: Omit<RequestInit, "credentials">): Promise<Response> {
+  return fetch(`${getApiBaseUrl()}${path}`, { ...init, credentials: apiCredentials() });
 }
 
 export async function readJson<T>(response: Response): Promise<T> {
@@ -123,12 +127,6 @@ export async function tryReadError(response: Response): Promise<ErrorResponse | 
   }
 }
 
-export function shouldSendCookies() {
-  const raw = import.meta.env.VITE_IMAGEOPZ_SEND_COOKIES as unknown as string | undefined;
-  if (!raw) return true;
-  return raw === "true";
-}
-
 export function buildAuthHeaders(params?: { sessionId?: string | null; accessToken?: string | null; json?: boolean }) {
   const headers: Record<string, string> = {};
   if (params?.json) headers["content-type"] = "application/json";
@@ -150,15 +148,10 @@ export class ImageOpzApiError extends Error {
 }
 
 export async function getJobStatus(jobId: string, params?: { sessionId?: string | null }): Promise<JobStatusResponse> {
-  const apiBaseUrl = getApiBaseUrl();
-  const response = await fetch(
-    `${apiBaseUrl}/api/v1/status/${encodeURIComponent(jobId)}`,
-    {
-      method: "GET",
-      credentials: shouldSendCookies() ? "include" : "omit",
-      headers: buildAuthHeaders({ sessionId: params?.sessionId }),
-    }
-  );
+  const response = await apiFetch(`/api/v1/status/${encodeURIComponent(jobId)}`, {
+    method: "GET",
+    headers: buildAuthHeaders({ sessionId: params?.sessionId }),
+  });
 
   if (!response.ok) {
     const payload = await tryReadError(response);
@@ -177,11 +170,9 @@ export async function reconcileSession(params?: {
   sessionId?: string | null;
   accessToken?: string | null;
 }): Promise<SessionMeResponse> {
-  const apiBaseUrl = getApiBaseUrl();
-  const response = await fetch(`${apiBaseUrl}/api/v1/session/reconcile`, {
+  const response = await apiFetch("/api/v1/session/reconcile", {
     method: "POST",
     headers: buildAuthHeaders({ sessionId: params?.sessionId, accessToken: params?.accessToken }),
-    credentials: shouldSendCookies() ? "include" : "omit",
   });
   if (!response.ok) {
     const payload = await tryReadError(response);
@@ -200,16 +191,14 @@ export async function createLemonSqueezyCheckout(params: {
   sessionId?: string | null;
   accessToken?: string | null;
 }): Promise<LemonSqueezyCreateCheckoutResponse> {
-  const apiBaseUrl = getApiBaseUrl();
   const body: LemonSqueezyCreateCheckoutRequest = {
     email: params.email,
     session_id: params.sessionId ?? null,
   };
 
-  const response = await fetch(`${apiBaseUrl}/api/v1/checkout/lemonsqueezy`, {
+  const response = await apiFetch("/api/v1/checkout/lemonsqueezy", {
     method: "POST",
     headers: buildAuthHeaders({ sessionId: params.sessionId, accessToken: params.accessToken, json: true }),
-    credentials: shouldSendCookies() ? "include" : "omit",
     body: JSON.stringify(body),
   });
 
@@ -231,13 +220,11 @@ export async function restoreProSession(params: {
   sessionId?: string | null;
   accessToken?: string | null;
 }): Promise<SessionRestoreResponse> {
-  const apiBaseUrl = getApiBaseUrl();
   const body: SessionRestoreRequest = { email: params.email };
 
-  const response = await fetch(`${apiBaseUrl}/api/v1/session/restore`, {
+  const response = await apiFetch("/api/v1/session/restore", {
     method: "POST",
     headers: buildAuthHeaders({ sessionId: params.sessionId, accessToken: params.accessToken, json: true }),
-    credentials: shouldSendCookies() ? "include" : "omit",
     body: JSON.stringify(body),
   });
 
@@ -257,11 +244,9 @@ export async function getSessionMe(params?: {
   sessionId?: string | null;
   accessToken?: string | null;
 }): Promise<SessionMeResponse> {
-  const apiBaseUrl = getApiBaseUrl();
-  const response = await fetch(`${apiBaseUrl}/api/v1/session/me`, {
+  const response = await apiFetch("/api/v1/session/me", {
     method: "GET",
     headers: buildAuthHeaders({ sessionId: params?.sessionId, accessToken: params?.accessToken }),
-    credentials: shouldSendCookies() ? "include" : "omit",
   });
 
   if (!response.ok) {
@@ -281,11 +266,10 @@ export interface SessionLogoutResponse {
   session_id: string;
 }
 
-export async function logoutSession(): Promise<SessionLogoutResponse> {
-  const apiBaseUrl = getApiBaseUrl();
-  const response = await fetch(`${apiBaseUrl}/api/v1/session/logout`, {
+export async function logoutSession(params?: { sessionId?: string | null }): Promise<SessionLogoutResponse> {
+  const response = await apiFetch("/api/v1/session/logout", {
     method: "POST",
-    credentials: "include",
+    headers: buildAuthHeaders({ sessionId: params?.sessionId }),
   });
 
   if (!response.ok) {

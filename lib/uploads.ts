@@ -2,10 +2,9 @@
 // Contract: imageopz-server docs/engineering/contracts/uploads-api.md. No React in this module.
 import {
   ImageOpzApiError,
+  apiFetch,
   buildAuthHeaders,
-  getApiBaseUrl,
   readJson,
-  shouldSendCookies,
   tryReadError,
   type JobStatusEnum,
 } from "./imageopzApi";
@@ -55,10 +54,9 @@ export interface CompleteResponse {
 }
 
 async function postJson<T>(path: string, body: unknown, identity: UploadIdentity, label: string): Promise<T> {
-  const response = await fetch(`${getApiBaseUrl()}${path}`, {
+  const response = await apiFetch(path, {
     method: "POST",
     headers: buildAuthHeaders({ sessionId: identity.sessionId, accessToken: identity.accessToken, json: true }),
-    credentials: shouldSendCookies() ? "include" : "omit",
     body: JSON.stringify(body),
   });
   if (!response.ok) {

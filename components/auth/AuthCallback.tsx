@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { getSessionMe, restoreProSession, ImageOpzApiError } from "@/lib/imageopzApi";
 import { supabase } from "@/lib/supabaseClient";
+import { getOrCreateSessionId } from "@/lib/session";
 import posthog from 'posthog-js';
 
 function sleep(ms: number) {
@@ -60,17 +61,7 @@ export function AuthCallback() {
         }
 
         const tokenToUse = accessToken ?? (await getSupabaseAccessTokenWithRetry()) ?? null;
-        let sessionId = localStorage.getItem("imageopz_session_id");
-        if (!sessionId) {
-          const id =
-            typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-              ? crypto.randomUUID()
-              : `sid_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-          try {
-            localStorage.setItem("imageopz_session_id", id);
-          } catch {}
-          sessionId = id;
-        }
+        const sessionId = getOrCreateSessionId();
         const restoreIntent = localStorage.getItem("imageopz_restore_intent") === "true";
         if (restoreIntent) {
           localStorage.removeItem("imageopz_restore_intent");
