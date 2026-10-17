@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase, supabaseEnabled } from "@/lib/supabaseClient";
+import { readConfig } from "@/lib/config";
 import posthog from 'posthog-js';
 
 type AuthContextValue = {
@@ -47,8 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error("Supabase is not configured (missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
     }
     const redirectTo =
-      (import.meta.env.VITE_SUPABASE_REDIRECT_URL as string | undefined) ||
-      `${window.location.origin}/auth/callback`;
+      readConfig().supabaseRedirectUrl || `${window.location.origin}/auth/callback`;
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {

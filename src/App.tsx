@@ -31,12 +31,12 @@ import {
   createLemonSqueezyCheckout,
   getSessionMe,
   reconcileSession,
-  logoutSession,
   ImageOpzApiError,
   type JobStatusResponse,
   type SessionMeResponse,
 } from "@/lib/imageopzApi";
 import { saveResultBatch } from "@/lib/resultsStore";
+import { getOrCreateSessionId, logoutAndRotateSession, storeSessionId } from "@/lib/session";
 import {
   uploadBatch,
   classifyStartError,
@@ -308,27 +308,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   const [sessionMeLoading, setSessionMeLoading] = useState(true);
   const [sessionMeLoaded, setSessionMeLoaded] = useState(false);
   const [sessionMeError, setSessionMeError] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string>(() => {
-    try {
-      const existing = localStorage.getItem("imageopz_session_id");
-      if (existing) return existing;
-      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        const id = crypto.randomUUID();
-        localStorage.setItem("imageopz_session_id", id);
-        return id;
-      }
-    } catch {
-      // ignore
-    }
-    // Very old browsers: fallback to a non-uuid unique-ish value.
-    const fallback = `sid_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    try {
-      localStorage.setItem("imageopz_session_id", fallback);
-    } catch {
-      // ignore
-    }
-    return fallback;
-  });
+  const [sessionId, setSessionId] = useState<string>(() => getOrCreateSessionId());
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [forceRestore, setForceRestore] = useState(false);
   const [hideRestoreCta, setHideRestoreCta] = useState(false);
@@ -1215,7 +1195,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
   }, [posthog, isPro]);
 
   const handleLogout = useCallback(() => {
-    // Best-effort "logout": clear local identity markers, clear session cookie, and rotate session id.
+    // Best-effort "logout": clear local identity markers, end the server session and rotate the session id (lib/session.ts).
     (async () => {
       try {
         await signOut();
@@ -1224,9 +1204,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       }
       try {
         setIsLoggingOut(true);
-        const out = await logoutSession();
-        localStorage.setItem("imageopz_session_id", out.session_id);
-        setSessionId(out.session_id);
+        setSessionId(await logoutAndRotateSession(sessionId));
       } catch (err) {
         toast.error("Logout failed");
         setIsLoggingOut(false);
@@ -1250,7 +1228,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
       toast.success("Logged out");
       setIsLoggingOut(false);
     })();
-  }, [signOut]);
+  }, [signOut, sessionId]);
 
   useEffect(() => {
     // Handle restore result banner via query string (set by /auth/callback)
@@ -2262,7 +2240,7 @@ function AppContent({ lang }: { lang: "en" | "id" }) {
                   localStorage.setItem("imageopz_email", email);
                   setAccountEmail(email);
                   if (checkout.session_id) {
-                    localStorage.setItem("imageopz_session_id", checkout.session_id);
+                    storeSessionId(checkout.session_id);
                     setSessionId(checkout.session_id);
                   }
                   // Sync backend session state before redirect (cookie/session may be updated server-side)
